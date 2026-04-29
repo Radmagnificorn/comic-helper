@@ -33,12 +33,15 @@ export interface MaskRect {
 
 /**
  * The background image assigned to a frame.
- * The image is rendered at native resolution, anchored to the frame's top-left,
- * and clipped to the mask region.
+ * The image is rendered at native resolution, positioned at (offsetX, offsetY)
+ * relative to the frame's top-left, and clipped to the mask region.
  */
 export interface FrameBackground {
   assetId: string;
   imageId: string;
+  /** Pan offset in canvas pixels — shifts the image within the mask. */
+  offsetX: number;
+  offsetY: number;
   /**
    * Mask region of the frame that this background fills.
    * The image is clipped to this rect.

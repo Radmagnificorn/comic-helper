@@ -56,6 +56,8 @@
     if (!asset || asset.images.length === 0) return;
     const bg: FrameBackground = {
       assetId, imageId: asset.images[0].id,
+      offsetX: frame.background?.offsetX ?? 0,
+      offsetY: frame.background?.offsetY ?? 0,
       mask: frame.background?.mask ?? null,
     };
     dispatch('change', { frame: { ...frame, background: bg } });

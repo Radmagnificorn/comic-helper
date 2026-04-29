@@ -172,11 +172,22 @@
           });
           const kBg = new Konva.Image({
             image: img,
-            x: 0, y: 0,
+            x: bg.offsetX ?? 0,
+            y: bg.offsetY ?? 0,
             width: img.naturalWidth,
             height: img.naturalHeight,
-            listening: false,
+            draggable: inAdjustMode,
+            listening: inAdjustMode,
           });
+          if (inAdjustMode) {
+            kBg.on('mouseenter', () => { stage.container().style.cursor = 'move'; });
+            kBg.on('mouseleave', () => { stage.container().style.cursor = ''; });
+            kBg.on('dragend', () => {
+              dispatch('change', {
+                frame: { ...frame, background: { ...bg, offsetX: Math.round(kBg.x()), offsetY: Math.round(kBg.y()) } },
+              });
+            });
+          }
           bgGroup.add(kBg);
           group.add(bgGroup);
 
@@ -296,29 +307,17 @@
         // Live mask state — modified by handle drags, persisted on dragend.
         const maskState = { x: ref.mask.x, y: ref.mask.y, width: ref.mask.width, height: ref.mask.height };
 
-        // Mask body — outline + draggable to move the whole mask box.
+        // Mask body — static orange outline showing the visible region.
+        // Drag is handled on the bg image itself; handles resize the mask.
         const maskBody = new Konva.Rect({
           x: maskState.x, y: maskState.y,
           width: maskState.width, height: maskState.height,
           stroke: '#f0a040',
           strokeWidth: 1.5 / (displayScale * zoom),
           fill: 'rgba(240,160,64,0.05)',
-          draggable: true,
-          listening: true,
+          listening: false,
         });
-        maskBody.on('mouseenter', () => { stage.container().style.cursor = 'move'; });
-        maskBody.on('mouseleave', () => { stage.container().style.cursor = ''; });
-        maskBody.dragBoundFunc((pos) => {
-          const groupAbs = group.getAbsolutePosition();
-          const s = stage.scaleX();
-          const localX = (pos.x - groupAbs.x) / s;
-          const localY = (pos.y - groupAbs.y) / s;
-          const clampedX = Math.max(0, Math.min(frame.width - maskState.width, localX));
-          const clampedY = Math.max(0, Math.min(frame.height - maskState.height, localY));
-          return { x: groupAbs.x + clampedX * s, y: groupAbs.y + clampedY * s };
-        });
-
-        // The 8 resize handles — created below, then we wire up updaters.
+        group.add(maskBody);
         type HandlePos = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
         const handlePositions: HandlePos[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
         const handleSize = 6;
@@ -352,26 +351,12 @@
         }
 
         function refreshBgPosition() {
-          // Image stays anchored to frame (0,0). Only the clip region (mask) changes.
+          // Clip region tracks maskState; image position is driven by user drag.
           const parent = kBg.getParent() as Konva.Group | null;
           if (parent) {
             parent.clip({ x: maskState.x, y: maskState.y, width: maskState.width, height: maskState.height });
           }
         }
-
-        maskBody.on('dragmove', () => {
-          maskState.x = Math.round(maskBody.x());
-          maskState.y = Math.round(maskBody.y());
-          repositionHandles();
-          refreshBgPosition();
-          layer.batchDraw();
-        });
-        maskBody.on('dragend', () => {
-          dispatch('change', {
-            frame: { ...frame, background: { ...ref.bg, mask: { ...maskState } } },
-          });
-        });
-        group.add(maskBody);
 
         // Build the 8 handles.
         const MIN_MASK = 8;
@@ -584,6 +569,8 @@
     if (!f) return;
     const bg: FrameBackground = {
       assetId, imageId,
+      offsetX: f.background?.offsetX ?? 0,
+      offsetY: f.background?.offsetY ?? 0,
       mask: f.background?.mask ?? null,
     };
     dispatch('change', { frame: { ...f, background: bg } });

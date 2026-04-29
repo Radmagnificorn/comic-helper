@@ -14,8 +14,12 @@
 <script lang="ts">
   import { onMount, onDestroy, createEventDispatcher, tick } from 'svelte';
   import Konva from 'konva';
-  import type { Frame, Asset, FrameLayer, FrameBackground } from '../types';
+  import type { Frame, Asset, FrameLayer, FrameBackground, SpeechBubble } from '../types';
   import ImagePicker from './ImagePicker.svelte';
+  import pixelMplus10Url from '../assets/fonts/PixelMplus10-Regular.ttf';
+
+  /** Font family used by speech bubbles. Loaded from a bundled .ttf at startup. */
+  const BUBBLE_FONT = 'PixelMplus10';
 
   export let frames: Frame[] = [];
   export let assets: Asset[] = [];
@@ -115,7 +119,25 @@
     applyStageSize();
     renderAll();
     attachZoomHandlers();
+    // Load PixelMplus10 once available, then re-render so bubbles use the
+    // pixel font instead of the fallback sans-serif.
+    loadBubbleFont().then(() => { if (layer) renderAll(); });
   });
+
+  let bubbleFontPromise: Promise<void> | null = null;
+  function loadBubbleFont(): Promise<void> {
+    if (bubbleFontPromise) return bubbleFontPromise;
+    bubbleFontPromise = (async () => {
+      try {
+        const face = new FontFace(BUBBLE_FONT, `url(${pixelMplus10Url})`);
+        await face.load();
+        (document as any).fonts.add(face);
+      } catch (e) {
+        console.warn('Failed to load bubble font', e);
+      }
+    })();
+    return bubbleFontPromise;
+  }
 
   onDestroy(() => {
     stage?.destroy();
@@ -256,6 +278,12 @@
         kImg.on('click tap', () => openCharacterPicker(frame.id, fl.id, fl.assetId));
         attachLongPress(kImg, frame.id, fl.id);
         group.add(kImg);
+      }
+
+      // 3b. Speech bubbles (rendered above character layers)
+      const bubbles = frame.bubbles ?? [];
+      for (const bubble of bubbles) {
+        renderBubble(group, frame, bubble);
       }
 
       // 4. Selection outline (drawn last so it's on top)
@@ -504,6 +532,70 @@
   let menuFrameId: string | null = null;
   let menuLayerId: string | null = null;
   let suppressNextClick = false;
+
+  // ── Speech bubbles ───────────────────────────────────────────
+  /** Padding (in canvas px) between text and bubble background edge */
+  const BUBBLE_PAD = 3;
+  /** Corner radius of the white bubble background */
+  const BUBBLE_RADIUS = 4;
+
+  function renderBubble(group: Konva.Group, frame: Frame, bubble: SpeechBubble) {
+    // Build the text first so we can measure it for the background rect.
+    const text = new Konva.Text({
+      x: BUBBLE_PAD,
+      y: BUBBLE_PAD,
+      text: bubble.text || ' ',
+      fontFamily: BUBBLE_FONT,
+      fontSize: bubble.fontSize,
+      fill: '#000000',
+      lineHeight: 1.0,
+      listening: false,
+    });
+    const tw = Math.ceil(text.width());
+    const th = Math.ceil(text.height());
+    const bgW = tw + BUBBLE_PAD * 2;
+    const bgH = th + BUBBLE_PAD * 2;
+    const bg = new Konva.Rect({
+      x: 0,
+      y: 0,
+      width: bgW,
+      height: bgH,
+      fill: '#ffffff',
+      stroke: '#000000',
+      strokeWidth: 1,
+      cornerRadius: BUBBLE_RADIUS,
+    });
+    const bGroup = new Konva.Group({
+      x: bubble.x,
+      y: bubble.y,
+      draggable: frame.id !== bgAdjustFrameId,
+    });
+    bGroup.add(bg);
+    bGroup.add(text);
+    bGroup.dragBoundFunc((pos) => {
+      const groupAbs = group.getAbsolutePosition();
+      const scale = stage.scaleX();
+      const localX = (pos.x - groupAbs.x) / scale;
+      const localY = (pos.y - groupAbs.y) / scale;
+      const clampedX = Math.max(-bgW + 8, Math.min(frame.width - 8, localX));
+      const clampedY = Math.max(-bgH + 8, Math.min(frame.height - 8, localY));
+      return {
+        x: groupAbs.x + clampedX * scale,
+        y: groupAbs.y + clampedY * scale,
+      };
+    });
+    bGroup.on('dragend', () => {
+      const updated: SpeechBubble = {
+        ...bubble,
+        x: Math.round(bGroup.x()),
+        y: Math.round(bGroup.y()),
+      };
+      dispatch('change', {
+        frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },
+      });
+    });
+    group.add(bGroup);
+  }
 
   function attachLongPress(node: Konva.Image, frameId: string, layerId: string) {
     let timer: ReturnType<typeof setTimeout> | null = null;

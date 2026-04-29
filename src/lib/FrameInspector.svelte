@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import type { Frame, Asset, FrameBackground, FrameLayer } from '../types';
+  import type { Frame, Asset, FrameBackground, FrameLayer, SpeechBubble } from '../types';
 
   export let frame: Frame | null = null;
   export let assets: Asset[] = [];
@@ -104,6 +104,29 @@
     const reordered = [...displayLayers];
     [reordered[idx], reordered[idx + 1]] = [reordered[idx + 1], reordered[idx]];
     dispatch('change', { frame: { ...frame, layers: [...reordered].reverse() } });
+  }
+
+  // ── Speech bubbles ────────────────────────────────────────────
+  function addBubble() {
+    if (!frame) return;
+    const bubble: SpeechBubble = {
+      id: crypto.randomUUID(),
+      text: 'Hello!',
+      x: 4,
+      y: 4,
+      fontSize: 10,
+    };
+    dispatch('change', { frame: { ...frame, bubbles: [...(frame.bubbles ?? []), bubble] } });
+  }
+  function updateBubble(id: string, patch: Partial<SpeechBubble>) {
+    if (!frame) return;
+    dispatch('change', {
+      frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === id ? { ...b, ...patch } : b) },
+    });
+  }
+  function removeBubble(id: string) {
+    if (!frame) return;
+    dispatch('change', { frame: { ...frame, bubbles: (frame.bubbles ?? []).filter(b => b.id !== id) } });
   }
 </script>
 
@@ -272,6 +295,36 @@
         <option value={a.id}>{a.name}</option>
       {/each}
     </select>
+
+    <!-- ── Speech bubbles ───────────────────────── -->
+    <div class="section-header">Speech bubbles</div>
+    {#if (frame.bubbles ?? []).length === 0}
+      <p class="empty small">No bubbles yet.</p>
+    {:else}
+      <ul class="bubbles">
+        {#each frame.bubbles ?? [] as b (b.id)}
+          <li class="bubble-row">
+            <textarea
+              class="bubble-text"
+              rows="2"
+              value={b.text}
+              on:input={e => updateBubble(b.id, { text: (e.target as HTMLTextAreaElement).value })}
+            ></textarea>
+            <label class="field bubble-size">
+              <span class="field-label">Size</span>
+              <input
+                type="number"
+                min="6" max="48"
+                value={b.fontSize}
+                on:change={e => updateBubble(b.id, { fontSize: Math.max(6, Math.min(48, +(e.target as HTMLInputElement).value)) })}
+              />
+            </label>
+            <button class="icon-btn danger" title="Remove bubble" on:click={() => removeBubble(b.id)}>✕</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    <button class="btn" on:click={addBubble}>+ Add speech bubble</button>
   {/if}
 </div>
 
@@ -337,4 +390,20 @@
   .icon-btn { background: none; border: none; cursor: pointer; padding: 4px 6px; color: #7070a0; border-radius: 3px; }
   .icon-btn:hover { color: #c0c0e0; }
   .icon-btn.danger:hover { background: #7a2020; color: #fff; }
+
+  /* Speech bubbles */
+  .bubbles { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .bubble-row {
+    display: flex; align-items: flex-start; gap: 6px;
+    padding: 6px; background: #1a1a30; border: 1px solid transparent;
+    border-radius: 4px;
+  }
+  .bubble-text {
+    flex: 1; min-width: 0; resize: vertical;
+    background: #0e0e1a; color: #e0e0f0;
+    border: 1px solid #4a4a6a; border-radius: 3px;
+    padding: 4px 6px; font-size: 0.82rem; font-family: inherit;
+  }
+  .bubble-size { width: 60px; flex-shrink: 0; }
+  .bubble-size input { width: 100%; }
 </style>

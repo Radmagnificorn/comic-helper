@@ -52,6 +52,18 @@ export interface FrameBackground {
   mask: MaskRect | null;
 }
 
+/** A comic-style speech bubble: text on a white rounded rect. */
+export interface SpeechBubble {
+  id: string;
+  /** Text content (newlines allowed) */
+  text: string;
+  /** Top-left position of the white background rect, in canvas pixels */
+  x: number;
+  y: number;
+  /** Font size in canvas pixels */
+  fontSize: number;
+}
+
 export interface Frame {
   id: string;
   label: string;
@@ -65,6 +77,8 @@ export interface Frame {
   background: FrameBackground | null;
   /** Character layers */
   layers: FrameLayer[];
+  /** Speech bubbles, rendered on top of layers */
+  bubbles?: SpeechBubble[];
 }
 
 export interface Project {

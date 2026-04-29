@@ -62,6 +62,10 @@ export interface SpeechBubble {
   y: number;
   /** Font size in canvas pixels */
   fontSize: number;
+  /** Tail tip position in canvas pixels (frame-relative). The tail base is
+   * inferred from the bubble edge nearest the tip. */
+  tailX: number;
+  tailY: number;
 }
 
 export interface Frame {

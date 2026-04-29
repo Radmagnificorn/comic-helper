@@ -282,7 +282,13 @@
 
       // 3b. Speech bubbles (rendered above character layers)
       const bubbles = frame.bubbles ?? [];
-      for (const bubble of bubbles) {
+      for (const raw of bubbles) {
+        // Backfill tail coordinates for bubbles created before tails existed.
+        const bubble: SpeechBubble = {
+          ...raw,
+          tailX: raw.tailX ?? raw.x + 8,
+          tailY: raw.tailY ?? raw.y + 26,
+        };
         renderBubble(group, frame, bubble);
       }
 
@@ -538,6 +544,8 @@
   const BUBBLE_PAD = 3;
   /** Corner radius of the white bubble background */
   const BUBBLE_RADIUS = 4;
+  /** Radius (canvas px) of the draggable tail-tip handle */
+  const TAIL_HANDLE_R = 3;
 
   function renderBubble(group: Konva.Group, frame: Frame, bubble: SpeechBubble) {
     // Build the text first so we can measure it for the background rect.
@@ -555,16 +563,23 @@
     const th = Math.ceil(text.height());
     const bgW = tw + BUBBLE_PAD * 2;
     const bgH = th + BUBBLE_PAD * 2;
-    const bg = new Konva.Rect({
-      x: 0,
-      y: 0,
-      width: bgW,
-      height: bgH,
+
+    // Mutable tail tip in bubble-local coords. Updated live while dragging the
+    // tip handle so the shape's sceneFunc redraws with the new tail.
+    const tip = { x: bubble.tailX - bubble.x, y: bubble.tailY - bubble.y };
+
+    const bg = new Konva.Shape({
+      x: 0, y: 0,
       fill: '#ffffff',
       stroke: '#000000',
       strokeWidth: 1,
-      cornerRadius: BUBBLE_RADIUS,
+      sceneFunc: (ctx, sh) => {
+        drawBubblePath(ctx as unknown as CanvasRenderingContext2D, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y);
+        (ctx as any).fillStrokeShape(sh);
+      },
+      listening: false,
     });
+
     const bGroup = new Konva.Group({
       x: bubble.x,
       y: bubble.y,
@@ -584,17 +599,142 @@
         y: groupAbs.y + clampedY * scale,
       };
     });
+    bGroup.on('dragmove', () => {
+      // Keep the tip handle (a sibling of bGroup) anchored at the world tail
+      // position by recomputing its position from the bubble's new origin.
+      const newTipWorldX = bGroup.x() + tip.x;
+      const newTipWorldY = bGroup.y() + tip.y;
+      tipHandle.position({ x: newTipWorldX, y: newTipWorldY });
+    });
     bGroup.on('dragend', () => {
+      const newX = Math.round(bGroup.x());
+      const newY = Math.round(bGroup.y());
       const updated: SpeechBubble = {
         ...bubble,
-        x: Math.round(bGroup.x()),
-        y: Math.round(bGroup.y()),
+        x: newX, y: newY,
+        // Tail tip stays at the same world (frame-local) position.
+        tailX: newX + Math.round(tip.x),
+        tailY: newY + Math.round(tip.y),
       };
       dispatch('change', {
         frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },
       });
     });
     group.add(bGroup);
+
+    // Draggable tip handle. Lives as a sibling of bGroup so dragging it
+    // doesn't drag the bubble itself.
+    const tipHandle = new Konva.Circle({
+      x: bubble.tailX,
+      y: bubble.tailY,
+      radius: TAIL_HANDLE_R,
+      fill: '#7070ff',
+      stroke: '#ffffff',
+      strokeWidth: 1,
+      draggable: frame.id !== bgAdjustFrameId,
+      listening: frame.id !== bgAdjustFrameId,
+      // Make handle scale-independent so it stays a constant screen size.
+    });
+    tipHandle.dragBoundFunc((pos) => {
+      const groupAbs = group.getAbsolutePosition();
+      const scale = stage.scaleX();
+      const localX = (pos.x - groupAbs.x) / scale;
+      const localY = (pos.y - groupAbs.y) / scale;
+      // Allow tip anywhere within (or slightly past) the frame bounds.
+      const clampedX = Math.max(0, Math.min(frame.width, localX));
+      const clampedY = Math.max(0, Math.min(frame.height, localY));
+      return {
+        x: groupAbs.x + clampedX * scale,
+        y: groupAbs.y + clampedY * scale,
+      };
+    });
+    tipHandle.on('dragmove', () => {
+      // Update the live tail position relative to the bubble origin and
+      // request a redraw so the bubble shape's sceneFunc picks up the change.
+      tip.x = tipHandle.x() - bGroup.x();
+      tip.y = tipHandle.y() - bGroup.y();
+      layer.batchDraw();
+    });
+    tipHandle.on('dragend', () => {
+      const updated: SpeechBubble = {
+        ...bubble,
+        tailX: Math.round(tipHandle.x()),
+        tailY: Math.round(tipHandle.y()),
+      };
+      dispatch('change', {
+        frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },
+      });
+    });
+    group.add(tipHandle);
+  }
+
+  /**
+   * Draw a rounded-rect outline with a triangular tail extruding to (tx, ty).
+   * Path is in local coords (top-left = 0,0). Uses the closest edge to anchor
+   * the tail base. If the tip is inside the rect, no tail is drawn.
+   */
+  function drawBubblePath(
+    ctx: CanvasRenderingContext2D,
+    w: number, h: number, r: number,
+    tx: number, ty: number,
+  ) {
+    const cx = w / 2, cy = h / 2;
+    const dx = tx - cx, dy = ty - cy;
+    const insideRect = tx >= 0 && tx <= w && ty >= 0 && ty <= h;
+
+    // Decide which side hosts the tail base.
+    let side: 'top' | 'right' | 'bottom' | 'left' | null = null;
+    if (!insideRect) {
+      const horiz = Math.abs(dx) * h > Math.abs(dy) * w;
+      side = horiz ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top');
+    }
+
+    // Tail base width — cap so it always fits between the corner arcs.
+    const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 8));
+
+    // Compute base midpoint along the chosen edge by projecting tip.
+    let m = 0;
+    if (side === 'top' || side === 'bottom') {
+      m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, tx));
+    } else if (side === 'left' || side === 'right') {
+      m = Math.max(r + baseW / 2, Math.min(h - r - baseW / 2, ty));
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(r, 0);
+    // ── Top edge ────────────────────────
+    if (side === 'top') {
+      ctx.lineTo(m - baseW / 2, 0);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(m + baseW / 2, 0);
+    }
+    ctx.lineTo(w - r, 0);
+    ctx.arcTo(w, 0, w, r, r);
+    // ── Right edge ──────────────────────
+    if (side === 'right') {
+      ctx.lineTo(w, m - baseW / 2);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(w, m + baseW / 2);
+    }
+    ctx.lineTo(w, h - r);
+    ctx.arcTo(w, h, w - r, h, r);
+    // ── Bottom edge ─────────────────────
+    if (side === 'bottom') {
+      ctx.lineTo(m + baseW / 2, h);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(m - baseW / 2, h);
+    }
+    ctx.lineTo(r, h);
+    ctx.arcTo(0, h, 0, h - r, r);
+    // ── Left edge ───────────────────────
+    if (side === 'left') {
+      ctx.lineTo(0, m + baseW / 2);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(0, m - baseW / 2);
+    }
+    ctx.lineTo(0, r);
+    ctx.arcTo(0, 0, r, 0, r);
+    ctx.closePath();
   }
 
   function attachLongPress(node: Konva.Image, frameId: string, layerId: string) {

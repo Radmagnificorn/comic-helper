@@ -115,6 +115,9 @@
       x: 4,
       y: 4,
       fontSize: 10,
+      // Default tail tip points down-left from the bubble.
+      tailX: 12,
+      tailY: 30,
     };
     dispatch('change', { frame: { ...frame, bubbles: [...(frame.bubbles ?? []), bubble] } });
   }

@@ -96,10 +96,22 @@
   }
 
   // ── Lifecycle ────────────────────────────────────────────────
+
+  /** Set zoom so the canvas width fills ~90% of the available viewport width. */
+  function fitZoom() {
+    const cw = canvasWidth();
+    if (!cw || !viewport) return;
+    const availableW = viewport.clientWidth;
+    if (!availableW) return;
+    const target = (availableW * 0.9) / (cw * displayScale);
+    zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, target));
+  }
+
   onMount(() => {
     stage = new Konva.Stage({ container, width: 1, height: 1 });
     layer = new Konva.Layer();
     stage.add(layer);
+    fitZoom();
     applyStageSize();
     renderAll();
     attachZoomHandlers();

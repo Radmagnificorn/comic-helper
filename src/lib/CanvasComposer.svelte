@@ -190,6 +190,7 @@
             height: img.naturalHeight,
             draggable: inAdjustMode,
             listening: inAdjustMode,
+            imageSmoothingEnabled: false,
           });
           if (inAdjustMode) {
             kBg.on('mouseenter', () => { stage.container().style.cursor = 'move'; });
@@ -222,10 +223,18 @@
           image: img,
           x: fl.x, y: fl.y,
           width: img.naturalWidth, height: img.naturalHeight,
+          // Flip horizontally by negating scaleX and offsetting so x/y still
+          // refer to the visual top-left of the mirrored image.
+          scaleX: fl.flippedX ? -1 : 1,
+          offsetX: fl.flippedX ? img.naturalWidth : 0,
           draggable: !inAdjustMode,
           listening: !inAdjustMode,
+          imageSmoothingEnabled: false,
         });
         kImg.dragBoundFunc((pos) => {
+          // With offsetX = naturalWidth and scaleX = -1, kImg.x() still equals
+          // the visual top-left X of the mirrored image, so no flip
+          // compensation is needed here.
           const groupAbs = group.getAbsolutePosition();
           const scale = stage.scaleX();
           const localX = (pos.x - groupAbs.x) / scale;
@@ -245,6 +254,7 @@
           });
         });
         kImg.on('click tap', () => openCharacterPicker(frame.id, fl.id, fl.assetId));
+        attachLongPress(kImg, frame.id, fl.id);
         group.add(kImg);
       }
 
@@ -484,6 +494,94 @@
     closePicker();
   }
 
+  // ── Long-press context menu for character layers ─────────────
+  const LONG_PRESS_MS = 500;
+  const LONG_PRESS_MOVE_TOLERANCE = 6; // CSS pixels
+
+  let menuOpen = false;
+  let menuX = 0;
+  let menuY = 0;
+  let menuFrameId: string | null = null;
+  let menuLayerId: string | null = null;
+  let suppressNextClick = false;
+
+  function attachLongPress(node: Konva.Image, frameId: string, layerId: string) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let startX = 0, startY = 0;
+
+    const cancel = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+    };
+
+    node.on('pointerdown', (e: any) => {
+      const ev = e.evt as PointerEvent;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      cancel();
+      timer = setTimeout(() => {
+        timer = null;
+        // Stop the pending drag — Konva will start dragging on first move
+        // after pointerdown unless we cancel it here.
+        node.stopDrag();
+        suppressNextClick = true;
+        menuFrameId = frameId;
+        menuLayerId = layerId;
+        menuX = ev.clientX;
+        menuY = ev.clientY;
+        menuOpen = true;
+      }, LONG_PRESS_MS);
+    });
+    node.on('pointermove', (e: any) => {
+      if (timer === null) return;
+      const ev = e.evt as PointerEvent;
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
+        cancel();
+      }
+    });
+    node.on('pointerup pointercancel pointerleave dragstart', cancel);
+  }
+
+  function closeMenu() {
+    menuOpen = false;
+    menuFrameId = null;
+    menuLayerId = null;
+  }
+
+  function menuMoveLayer(direction: 'up' | 'down') {
+    const f = menuFrameId ? frames.find(fr => fr.id === menuFrameId) : null;
+    if (!f || !menuLayerId) { closeMenu(); return; }
+    const idx = f.layers.findIndex(l => l.id === menuLayerId);
+    if (idx < 0) { closeMenu(); return;}
+    // In storage order, end of array = topmost. "Up" = toward front = +1.
+    const swapWith = direction === 'up' ? idx + 1 : idx - 1;
+    if (swapWith < 0 || swapWith >= f.layers.length) { closeMenu(); return; }
+    const newLayers = [...f.layers];
+    [newLayers[idx], newLayers[swapWith]] = [newLayers[swapWith], newLayers[idx]];
+    dispatch('change', { frame: { ...f, layers: newLayers } });
+    closeMenu();
+  }
+
+  function menuFlipLayer() {
+    const f = menuFrameId ? frames.find(fr => fr.id === menuFrameId) : null;
+    if (!f || !menuLayerId) { closeMenu(); return; }
+    dispatch('change', {
+      frame: { ...f, layers: f.layers.map(l =>
+        l.id === menuLayerId ? { ...l, flippedX: !l.flippedX } : l
+      ) },
+    });
+    closeMenu();
+  }
+
+  // Suppress the click event that fires immediately after a long-press,
+  // so the image picker doesn't open on top of the menu.
+  function onCanvasClickCapture(e: MouseEvent) {
+    if (suppressNextClick) {
+      e.stopPropagation();
+      e.preventDefault();
+      suppressNextClick = false;
+    }
+  }
+
   // ── Zoom & pan ───────────────────────────────────────────────
   const MIN_ZOOM = 0.25;
   const MAX_ZOOM = 6;
@@ -628,7 +726,7 @@
 
   <div class="viewport" bind:this={viewport}>
     <div class="stage-pad">
-      <div class="stage-host" bind:this={container}></div>
+      <div class="stage-host" bind:this={container} on:click|capture={onCanvasClickCapture}></div>
     </div>
   </div>
 </div>
@@ -642,6 +740,16 @@
   />
 {/if}
 
+{#if menuOpen}
+  <!-- Backdrop captures clicks/taps outside the menu to close it. -->
+  <div class="ctx-backdrop" on:click={closeMenu} on:contextmenu|preventDefault={closeMenu}></div>
+  <div class="ctx-menu" style="left: {menuX}px; top: {menuY}px;">
+    <button class="ctx-item" on:click={() => menuMoveLayer('up')}>▲ Move up</button>
+    <button class="ctx-item" on:click={() => menuMoveLayer('down')}>▼ Move down</button>
+    <button class="ctx-item" on:click={menuFlipLayer}>⇋ Flip horizontal</button>
+  </div>
+{/if}
+
 <style>
   .composer-root { display: flex; flex-direction: column; height: 100%; min-width: 0; }
   .zoom-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: #1a1a2e; border-bottom: 1px solid #2a2a40; flex-shrink: 0; font-size: 0.8rem; color: #c0c0e0; }
@@ -652,4 +760,36 @@
   .viewport { flex: 1; overflow: auto; background: #0a0a14; touch-action: pan-x pan-y; position: relative; }
   .stage-pad { padding: 24px; display: inline-block; min-width: 100%; box-sizing: border-box; }
   .stage-host { display: inline-block; box-shadow: 0 0 0 1px #2a2a40, 0 8px 32px rgba(0,0,0,0.4); touch-action: none; }
+  .stage-host :global(canvas) { image-rendering: pixelated; image-rendering: crisp-edges; }
+
+  .ctx-backdrop {
+    position: fixed; inset: 0;
+    z-index: 100;
+    background: transparent;
+  }
+  .ctx-menu {
+    position: fixed;
+    z-index: 101;
+    background: #1e1e30;
+    border: 1px solid #4a4a6a;
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+    min-width: 160px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .ctx-item {
+    background: transparent;
+    border: none;
+    color: #e0e0f0;
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .ctx-item:hover { background: #2a2a4a; }
+  .ctx-item:active { background: #3a3a6a; }
 </style>

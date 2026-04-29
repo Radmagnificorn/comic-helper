@@ -21,6 +21,8 @@ export interface FrameLayer {
   /** Position in canvas pixels */
   x: number;
   y: number;
+  /** Horizontally mirror the image */
+  flippedX?: boolean;
 }
 
 /** A rectangular region in canvas pixels (relative to the frame's top-left) */

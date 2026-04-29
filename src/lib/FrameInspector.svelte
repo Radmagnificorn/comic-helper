@@ -93,39 +93,18 @@
   /** Layers sorted top-of-list = topmost render = end of frame.layers array */
   $: displayLayers = frame ? [...frame.layers].reverse() : [];
 
-  // Drag-to-reorder. Indices are into displayLayers (visual top→bottom).
-  let dragIndex: number | null = null;
-  let overIndex: number | null = null;
-
-  function onDragStart(e: DragEvent, idx: number) {
-    dragIndex = idx;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', String(idx));
-    }
-  }
-  function onDragOver(e: DragEvent, idx: number) {
-    if (dragIndex === null) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    overIndex = idx;
-  }
-  function onDragLeave() { overIndex = null; }
-  function onDrop(e: DragEvent, idx: number) {
-    e.preventDefault();
-    if (!frame || dragIndex === null || dragIndex === idx) {
-      dragIndex = null; overIndex = null; return;
-    }
+  function moveLayerUp(idx: number) {
+    if (!frame || idx <= 0) return;
     const reordered = [...displayLayers];
-    const [moved] = reordered.splice(dragIndex, 1);
-    reordered.splice(idx, 0, moved);
-    // Reverse back into storage order (last = topmost)
-    const newStorageOrder = [...reordered].reverse();
-    dispatch('change', { frame: { ...frame, layers: newStorageOrder } });
-    dragIndex = null;
-    overIndex = null;
+    [reordered[idx - 1], reordered[idx]] = [reordered[idx], reordered[idx - 1]];
+    dispatch('change', { frame: { ...frame, layers: [...reordered].reverse() } });
   }
-  function onDragEnd() { dragIndex = null; overIndex = null; }
+  function moveLayerDown(idx: number) {
+    if (!frame || idx >= displayLayers.length - 1) return;
+    const reordered = [...displayLayers];
+    [reordered[idx], reordered[idx + 1]] = [reordered[idx + 1], reordered[idx]];
+    dispatch('change', { frame: { ...frame, layers: [...reordered].reverse() } });
+  }
 </script>
 
 <div class="inspector">
@@ -245,25 +224,19 @@
     <!-- ── Assets (character layers) ─────── -->
     <div class="section-header">
       <span>Assets</span>
-      <span class="hint">drag to reorder · top = front</span>
+      <span class="hint">top = front</span>
     </div>
     {#if displayLayers.length === 0}
       <p class="empty small">No layers yet.</p>
     {:else}
-      <ul class="layers" on:dragleave={onDragLeave}>
+      <ul class="layers">
         {#each displayLayers as fl, idx (fl.id)}
           {@const asset = getAsset(fl.assetId)}
-          <li
-            class="layer-row"
-            class:dragging={dragIndex === idx}
-            class:drop-target={overIndex === idx && dragIndex !== idx}
-            draggable="true"
-            on:dragstart={e => onDragStart(e, idx)}
-            on:dragover={e => onDragOver(e, idx)}
-            on:drop={e => onDrop(e, idx)}
-            on:dragend={onDragEnd}
-          >
-            <span class="grip" title="Drag to reorder">⋮⋮</span>
+          <li class="layer-row">
+            <div class="order-btns">
+              <button class="nudge" title="Move layer forward" disabled={idx === 0} on:click={() => moveLayerUp(idx)}>▲</button>
+              <button class="nudge" title="Move layer back" disabled={idx === displayLayers.length - 1} on:click={() => moveLayerDown(idx)}>▼</button>
+            </div>
             {#if asset}
               <img class="layer-thumb" src={imageUrl(asset, fl.imageId)} alt={asset.name} draggable="false" />
             {/if}
@@ -351,13 +324,9 @@
   .layer-row {
     display: flex; align-items: center; gap: 8px;
     padding: 6px; background: #1a1a30; border: 1px solid transparent;
-    border-radius: 4px; cursor: grab;
-    transition: background 0.1s, border-color 0.1s, opacity 0.1s;
+    border-radius: 4px;
   }
-  .layer-row:active { cursor: grabbing; }
-  .layer-row.dragging { opacity: 0.4; }
-  .layer-row.drop-target { border-color: #7070ff; background: #2a2a50; }
-  .grip { color: #5a5a7a; font-family: monospace; cursor: grab; user-select: none; padding: 0 2px; }
+  .order-btns { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
   .layer-thumb { width: 40px; height: 40px; object-fit: contain; background: #000; border-radius: 3px; flex-shrink: 0; image-rendering: pixelated; }
   .layer-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .layer-name { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

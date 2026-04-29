@@ -225,9 +225,7 @@
           draggable: !inAdjustMode,
           listening: !inAdjustMode,
         });
-        // Constrain dragging within this frame
         kImg.dragBoundFunc((pos) => {
-          // pos is in stage coordinates (already scaled). Convert frame group origin.
           const groupAbs = group.getAbsolutePosition();
           const scale = stage.scaleX();
           const localX = (pos.x - groupAbs.x) / scale;
@@ -653,5 +651,5 @@
   .zoom-hint { margin-left: auto; color: #6a6a8a; font-size: 0.72rem; }
   .viewport { flex: 1; overflow: auto; background: #0a0a14; touch-action: pan-x pan-y; position: relative; }
   .stage-pad { padding: 24px; display: inline-block; min-width: 100%; box-sizing: border-box; }
-  .stage-host { display: inline-block; box-shadow: 0 0 0 1px #2a2a40, 0 8px 32px rgba(0,0,0,0.4); }
+  .stage-host { display: inline-block; box-shadow: 0 0 0 1px #2a2a40, 0 8px 32px rgba(0,0,0,0.4); touch-action: none; }
 </style>

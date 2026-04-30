@@ -131,6 +131,20 @@
     if (!frame) return;
     dispatch('change', { frame: { ...frame, bubbles: (frame.bubbles ?? []).filter(b => b.id !== id) } });
   }
+
+  /** Called by parent (App) to scroll to + focus a specific bubble's textarea. */
+  export function focusBubble(bubbleId: string) {
+    // Wait a frame so the textarea exists if the inspector was just opened.
+    requestAnimationFrame(() => {
+      const ta = document.querySelector<HTMLTextAreaElement>(
+        `textarea.bubble-text[data-bubble-id="${bubbleId}"]`,
+      );
+      if (!ta) return;
+      ta.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      ta.focus();
+      ta.select();
+    });
+  }
 </script>
 
 <div class="inspector">
@@ -309,6 +323,7 @@
           <li class="bubble-row">
             <textarea
               class="bubble-text"
+              data-bubble-id={b.id}
               rows="2"
               value={b.text}
               on:input={e => updateBubble(b.id, { text: (e.target as HTMLTextAreaElement).value })}

@@ -48,6 +48,7 @@
     change: { frame: Frame };
     resize: { id: string; height: number };
     select: { id: string };
+    editbubble: { frameId: string; bubbleId: string };
   }>();
 
   let viewport: HTMLDivElement;     // scrollable wrapper
@@ -599,6 +600,14 @@
     });
     group.add(bGroup);
     attachBubbleLongPress(bGroup, frame.id, bubble.id);
+    let bubbleDragged = false;
+    bGroup.on('dragstart', () => { bubbleDragged = true; });
+    bGroup.on('click tap', () => {
+      if (suppressNextClick) return;
+      if (bubbleDragged) { bubbleDragged = false; return; }
+      if (frame.id === bgAdjustFrameId) return;
+      dispatch('editbubble', { frameId: frame.id, bubbleId: bubble.id });
+    });
 
     // Draggable tip handle — sibling of bGroup so it doesn't drag the bubble.
     const tipHandle = new Konva.Circle({
@@ -728,6 +737,11 @@
     menuFrameId = null;
     menuLayerId = null;
     menuBubbleId = null;
+    // The suppress flag exists to swallow the click that fires immediately
+    // after a long-press on the canvas. If the user instead taps a menu
+    // item (which lives outside the canvas), that click never arrives and
+    // the flag would otherwise stay set and eat the next real click.
+    suppressNextClick = false;
   }
 
   function menuMoveLayer(direction: 'up' | 'down') {

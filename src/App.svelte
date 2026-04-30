@@ -80,6 +80,7 @@
   }
 
   let composerRef: CanvasComposer;
+  let inspectorRef: FrameInspector | null = null;
 
   $: currentFrame = frames.find(f => f.id === selectedFrameId) ?? null;
   $: currentFrameIndex = currentFrame ? frames.findIndex(f => f.id === currentFrame.id) : -1;
@@ -94,6 +95,13 @@
 
   function handleAdjustBackground(e: CustomEvent<{ id: string | null }>) {
     bgAdjustFrameId = e.detail.id;
+  }
+
+  function handleEditBubble(frameId: string, bubbleId: string) {
+    selectedFrameId = frameId;
+    activeDrawer = 'inspector';
+    // Wait for the inspector to mount/update before focusing.
+    requestAnimationFrame(() => inspectorRef?.focusBubble(bubbleId));
   }
 
   // ── Boot ───────────────────────────────────────────────────────
@@ -390,8 +398,10 @@
   }
 
   // ── Topbar quick actions ───────────────────────────────────────
+  // Background assets are only ever set as a frame's background (via the
+  // FrameInspector), never added as scene layers, so the quick-add only
+  // exposes character assets here.
   $: characterAssets = assets.filter(a => a.type === 'character');
-  $: backgroundAssets = assets.filter(a => a.type === 'background');
   let quickAssetSelection = '';
 
   function quickToggleBgMove() {
@@ -399,30 +409,20 @@
     bgAdjustFrameId = bgAdjustFrameId === currentFrame.id ? null : currentFrame.id;
   }
 
-  async function quickAddAsset(value: string) {
+  async function quickAddCharacter(assetId: string) {
     quickAssetSelection = '';
-    if (!currentFrame || !value) return;
-    const [kind, id] = value.split(':');
-    const asset = assets.find(a => a.id === id);
-    if (!asset || asset.images.length === 0) return;
-    if (kind === 'char') {
-      const newLayer: FrameLayer = {
-        id: crypto.randomUUID(),
-        assetId: asset.id,
-        imageId: asset.images[0].id,
-        x: 0, y: 0,
-      };
-      const updated: Frame = { ...currentFrame, layers: [...currentFrame.layers, newLayer] };
-      await saveFrame(updated);
-      frames = frames.map(f => f.id === updated.id ? updated : f);
-    } else if (kind === 'bg') {
-      const updated: Frame = {
-        ...currentFrame,
-        background: { assetId: asset.id, imageId: asset.images[0].id, offsetX: 0, offsetY: 0, mask: null },
-      };
-      await saveFrame(updated);
-      frames = frames.map(f => f.id === updated.id ? updated : f);
-    }
+    if (!currentFrame || !assetId) return;
+    const asset = assets.find(a => a.id === assetId);
+    if (!asset || asset.type !== 'character' || asset.images.length === 0) return;
+    const newLayer: FrameLayer = {
+      id: crypto.randomUUID(),
+      assetId: asset.id,
+      imageId: asset.images[0].id,
+      x: 0, y: 0,
+    };
+    const updated: Frame = { ...currentFrame, layers: [...currentFrame.layers, newLayer] };
+    await saveFrame(updated);
+    frames = frames.map(f => f.id === updated.id ? updated : f);
   }
 
   async function quickAddBubble() {
@@ -464,25 +464,14 @@
       <select
         class="qa-select"
         bind:value={quickAssetSelection}
-        on:change={() => quickAddAsset(quickAssetSelection)}
-        disabled={!currentFrame || (characterAssets.length === 0 && backgroundAssets.length === 0)}
-        title="Add asset to selected frame"
+        on:change={() => quickAddCharacter(quickAssetSelection)}
+        disabled={!currentFrame || characterAssets.length === 0}
+        title="Add character to selected frame"
       >
-        <option value="">⊕ Asset</option>
-        {#if characterAssets.length > 0}
-          <optgroup label="Characters">
-            {#each characterAssets as a (a.id)}
-              <option value="char:{a.id}">{a.name}</option>
-            {/each}
-          </optgroup>
-        {/if}
-        {#if backgroundAssets.length > 0}
-          <optgroup label="Backgrounds">
-            {#each backgroundAssets as a (a.id)}
-              <option value="bg:{a.id}">{a.name}</option>
-            {/each}
-          </optgroup>
-        {/if}
+        <option value="">⊕ Character</option>
+        {#each characterAssets as a (a.id)}
+          <option value={a.id}>{a.name}</option>
+        {/each}
       </select>
       <button
         class="qa-btn"
@@ -515,6 +504,7 @@
           on:change={handleFrameChange}
           on:resize={handleResizeFrame}
           on:select={e => handleSelectFrame(e.detail.id)}
+          on:editbubble={e => handleEditBubble(e.detail.frameId, e.detail.bubbleId)}
         />
       {:else}
         <div class="no-frame">
@@ -546,6 +536,7 @@
         <div class="drawer-body">
           {#if activeDrawer === 'inspector'}
             <FrameInspector
+              bind:this={inspectorRef}
               frame={currentFrame}
               {assets}
               frameIndex={currentFrameIndex}

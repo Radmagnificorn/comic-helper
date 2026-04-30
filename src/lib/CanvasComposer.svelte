@@ -89,6 +89,78 @@
   function getAsset(id: string) { return assets.find(a => a.id === id); }
   function getImageMeta(asset: Asset, imageId: string) { return asset.images.find(i => i.id === imageId); }
 
+  /**
+   * Trace the path for a mask region on a 2D context. Used both for Konva
+   * `clipFunc` (background image) and the orange outline shape.
+   */
+  function tracePath(ctx: CanvasRenderingContext2D | any, m: { x: number; y: number; width: number; height: number; shape?: 'rect' | 'rounded' | 'ellipse'; cornerRadius?: number }) {
+    const shape = m.shape ?? 'rect';
+    ctx.beginPath();
+    if (shape === 'ellipse') {
+      const rx = m.width / 2;
+      const ry = m.height / 2;
+      const cx = m.x + rx;
+      const cy = m.y + ry;
+      ctx.ellipse(cx, cy, Math.max(0, rx), Math.max(0, ry), 0, 0, Math.PI * 2);
+    } else if (shape === 'rounded') {
+      const r = Math.max(0, Math.min(m.cornerRadius ?? 8, Math.min(m.width, m.height) / 2));
+      const x = m.x, y = m.y, w = m.width, h = m.height;
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    } else {
+      ctx.rect(m.x, m.y, m.width, m.height);
+    }
+  }
+
+  function applyMaskClip(g: Konva.Group, m: { x: number; y: number; width: number; height: number; shape?: 'rect' | 'rounded' | 'ellipse'; cornerRadius?: number }) {
+    g.clipFunc((ctx) => tracePath(ctx, m));
+  }
+
+  /**
+   * Bake the masked background to an offscreen canvas at native (canvas-pixel)
+   * resolution and threshold its alpha to {0, 255}. The returned canvas is
+   * `frameW × frameH`; the image is positioned at (offsetX, offsetY) inside
+   * it, clipped to the mask shape, with no anti-aliasing on the mask edges
+   * so the pixels stay 1-bit when the comic is upscaled.
+   */
+  function bakeMaskedBg(
+    frameW: number,
+    frameH: number,
+    img: HTMLImageElement,
+    offsetX: number,
+    offsetY: number,
+    mask: { x: number; y: number; width: number; height: number; shape?: 'rect' | 'rounded' | 'ellipse'; cornerRadius?: number },
+  ): HTMLCanvasElement {
+    const w = Math.max(1, Math.round(frameW));
+    const h = Math.max(1, Math.round(frameH));
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true })!;
+    ctx.imageSmoothingEnabled = false;
+    ctx.save();
+    tracePath(ctx, mask);
+    ctx.clip();
+    ctx.drawImage(img, Math.round(offsetX), Math.round(offsetY), img.naturalWidth, img.naturalHeight);
+    ctx.restore();
+    // Threshold the mask edge alpha to {0, 255} so curves stay 1-bit.
+    const data = ctx.getImageData(0, 0, w, h);
+    const px = data.data;
+    for (let i = 3; i < px.length; i += 4) {
+      px[i] = px[i] >= 128 ? 255 : 0;
+    }
+    ctx.putImageData(data, 0, 0);
+    return c;
+  }
+
   // ── Layout helpers (delegate to canvasLayout module) ────────
   function totalCanvasHeight(): number { return _totalCanvasHeight(frames); }
   function frameOffsetY(i: number): number { return _frameOffsetY(frames, i); }
@@ -203,12 +275,16 @@
       // In adjust mode the image is draggable (pan crop) and the mask gets handles.
       // We keep references for the adjust-mode overlay so it can render last.
       let adjustKBg: Konva.Image | null = null;
-      let adjustBgRef: { img: HTMLImageElement; bg: FrameBackground; mask: { x: number; y: number; width: number; height: number } } | null = null;
-      // Reference to the background's clipped group + a flag for whether the
-      // mask is implicit (auto-fits the whole frame). Used by the resize
-      // handle's dragmove to keep the bg visible as the frame grows/shrinks.
-      let bgClipGroup: Konva.Group | null = null;
+      let adjustBgRef: { img: HTMLImageElement; bg: FrameBackground; mask: { x: number; y: number; width: number; height: number; shape?: 'rect' | 'rounded' | 'ellipse'; cornerRadius?: number } } | null = null;
+      // Reference to a per-frame "rebake" closure that re-renders the masked
+      // background to its offscreen canvas at native resolution. Called by:
+      //   - the frame resize handle (when the implicit mask must auto-grow),
+      //   - the mask resize/move handles in adjust mode,
+      //   - the bg image's own drag in adjust mode (pan inside the mask).
+      let bgRebake: ((opts?: { mask?: typeof bgMaskState; offsetX?: number; offsetY?: number; frameHeight?: number }) => void) | null = null;
       let bgMaskImplicit = false;
+      let bgMaskState: { x: number; y: number; width: number; height: number; shape?: 'rect' | 'rounded' | 'ellipse'; cornerRadius?: number } | null = null;
+      let bgOffset: { x: number; y: number } = { x: 0, y: 0 };
 
       if (frame.background) {
         const bgAsset = getAsset(frame.background.assetId);
@@ -217,42 +293,75 @@
           const url = getBlobUrl(bgImgMeta.blob, bgImgMeta.id);
           const img = await loadImage(url, bgImgMeta.id);
           const bg = frame.background;
-          const mask = bg.mask ?? { x: 0, y: 0, width: frame.width, height: frame.height };
+          const mask = bg.mask ?? { x: 0, y: 0, width: frame.width, height: frame.height, shape: 'rect' as const };
+          bgMaskImplicit = !bg.mask;
+          bgMaskState = { ...mask };
+          bgOffset = { x: bg.offsetX ?? 0, y: bg.offsetY ?? 0 };
 
-          // Clipped group — background only renders inside the mask rect.
-          // Image is anchored at frame top-left at native resolution; the mask
-          // acts as a viewport revealing whatever pixels happen to be there.
-          const bgGroup = new Konva.Group({
-            x: 0, y: 0,
-            clip: { x: mask.x, y: mask.y, width: mask.width, height: mask.height },
-          });
+          // Bake the masked background once; live edits (resize / pan / mask
+          // drag) call bgRebake to refresh the offscreen canvas in place.
+          let baked = bakeMaskedBg(frame.width, frame.height, img, bgOffset.x, bgOffset.y, bgMaskState);
           const kBg = new Konva.Image({
-            image: img,
-            x: bg.offsetX ?? 0,
-            y: bg.offsetY ?? 0,
-            width: img.naturalWidth,
-            height: img.naturalHeight,
+            image: baked,
+            x: 0, y: 0,
+            width: frame.width,
+            height: frame.height,
             draggable: inAdjustMode,
             listening: inAdjustMode,
             imageSmoothingEnabled: false,
           });
+          // Track drag state so we can convert pointer drag of the Konva.Image
+          // into a re-bake at the new pan offset (instead of moving the image
+          // node itself).
+          let dragStartImageXY: { x: number; y: number } | null = null;
+          let dragStartOffset: { x: number; y: number } | null = null;
           if (inAdjustMode) {
             kBg.on('mouseenter', () => { stage.container().style.cursor = 'move'; });
             kBg.on('mouseleave', () => { stage.container().style.cursor = ''; });
+            kBg.on('dragstart', () => {
+              dragStartImageXY = { x: kBg.x(), y: kBg.y() };
+              dragStartOffset = { ...bgOffset };
+            });
+            kBg.on('dragmove', () => {
+              if (!dragStartImageXY || !dragStartOffset) return;
+              const dx = kBg.x() - dragStartImageXY.x;
+              const dy = kBg.y() - dragStartImageXY.y;
+              bgOffset = { x: Math.round(dragStartOffset.x + dx), y: Math.round(dragStartOffset.y + dy) };
+              bgRebake?.();
+              // Keep the Konva.Image node itself anchored at (0,0); the
+              // visual translation comes from re-baking with the new offset.
+              kBg.position({ x: dragStartImageXY.x, y: dragStartImageXY.y });
+            });
             kBg.on('dragend', () => {
+              dragStartImageXY = null;
+              dragStartOffset = null;
+              kBg.position({ x: 0, y: 0 });
               dispatch('change', {
-                frame: { ...frame, background: { ...bg, offsetX: Math.round(kBg.x()), offsetY: Math.round(kBg.y()) } },
+                frame: { ...frame, background: { ...bg, offsetX: bgOffset.x, offsetY: bgOffset.y } },
               });
             });
           }
-          bgGroup.add(kBg);
-          group.add(bgGroup);
-          bgClipGroup = bgGroup;
-          bgMaskImplicit = !bg.mask;
+          group.add(kBg);
+
+          bgRebake = (opts) => {
+            if (opts?.mask) bgMaskState = { ...opts.mask };
+            if (opts?.offsetX !== undefined) bgOffset.x = opts.offsetX;
+            if (opts?.offsetY !== undefined) bgOffset.y = opts.offsetY;
+            // For implicit masks (auto-fits the whole frame) the mask follows
+            // the live frame height during resize.
+            const liveH = opts?.frameHeight ?? frame.height;
+            if (bgMaskImplicit) {
+              bgMaskState = { x: 0, y: 0, width: frame.width, height: liveH, shape: 'rect' };
+            }
+            const fh = opts?.frameHeight ?? frame.height;
+            baked = bakeMaskedBg(frame.width, fh, img, bgOffset.x, bgOffset.y, bgMaskState!);
+            kBg.image(baked);
+            kBg.height(fh);
+          };
 
           if (inAdjustMode) {
             adjustKBg = kBg;
-            adjustBgRef = { img, bg, mask };
+            adjustBgRef = { img, bg, mask: bgMaskState };
           }
         }
       }
@@ -392,8 +501,8 @@
         bgRect.height(newHeight);
         // If the bg image's mask is implicit (auto = full frame), expand its
         // clip so the background fills the resized frame live.
-        if (bgClipGroup && bgMaskImplicit) {
-          bgClipGroup.clip({ x: 0, y: 0, width: frame.width, height: newHeight });
+        if (bgRebake && bgMaskImplicit) {
+          bgRebake({ frameHeight: newHeight });
         }
         if (frame.id === selectedFrameId) {
           const outlineNode = group.findOne((n: any) => n instanceof Konva.Rect && n.stroke() === '#7070ff') as Konva.Rect | undefined;
@@ -420,22 +529,27 @@
 
       // 6. Background-adjust overlay (rendered LAST so it sits on top of everything)
       if (inAdjustMode && adjustKBg && adjustBgRef) {
-        const kBg = adjustKBg;
         const ref = adjustBgRef;
 
         // Live mask state — modified by handle drags, persisted on dragend.
-        const maskState = { x: ref.mask.x, y: ref.mask.y, width: ref.mask.width, height: ref.mask.height };
+        const maskState: { x: number; y: number; width: number; height: number; shape?: 'rect' | 'rounded' | 'ellipse'; cornerRadius?: number } = {
+          x: ref.mask.x, y: ref.mask.y, width: ref.mask.width, height: ref.mask.height,
+          shape: ref.mask.shape ?? 'rect',
+          cornerRadius: ref.mask.cornerRadius,
+        };
 
-        // Mask body — static orange outline showing the visible region.
-        // Drag is handled on the bg image itself; handles resize the mask.
-        const maskBody = new Konva.Rect({
-          x: maskState.x, y: maskState.y,
-          width: maskState.width, height: maskState.height,
+        // Mask body — orange outline showing the visible region. Uses a
+        // sceneFunc so the outline matches the chosen shape (rect/rounded/ellipse).
+        const maskBody = new Konva.Shape({
           stroke: '#f0a040',
           strokeWidth: 1.5 / (displayScale * zoom),
           fill: 'rgba(240,160,64,0.05)',
           listening: false,
           name: UI_NODE_NAME,
+          sceneFunc: (ctx, shape) => {
+            tracePath(ctx, maskState);
+            ctx.fillStrokeShape(shape);
+          },
         });
         group.add(maskBody);
         type HandlePos = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
@@ -479,11 +593,8 @@
         }
 
         function refreshBgPosition() {
-          // Clip region tracks maskState; image position is driven by user drag.
-          const parent = kBg.getParent() as Konva.Group | null;
-          if (parent) {
-            parent.clip({ x: maskState.x, y: maskState.y, width: maskState.width, height: maskState.height });
-          }
+          // Re-bake the background at native resolution with the new mask.
+          bgRebake?.({ mask: maskState });
         }
 
         // Build the 8 handles.
@@ -556,10 +667,7 @@
               maskState.height = Math.round(cy - maskState.y);
             }
             // Update mask body & sibling handles & bg.
-            maskBody.x(maskState.x);
-            maskBody.y(maskState.y);
-            maskBody.width(maskState.width);
-            maskBody.height(maskState.height);
+            // (maskBody is a sceneFunc shape that reads maskState directly.)
             repositionHandles();
             refreshBgPosition();
             layer.batchDraw();
@@ -636,8 +744,6 @@
           const cy = moveHandle.y() + moveSize / 2;
           maskState.x = Math.round(cx - maskState.width / 2);
           maskState.y = Math.round(cy - maskState.height / 2);
-          maskBody.x(maskState.x);
-          maskBody.y(maskState.y);
           repositionHandles();
           refreshBgPosition();
           layer.batchDraw();

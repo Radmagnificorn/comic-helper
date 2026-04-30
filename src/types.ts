@@ -37,6 +37,15 @@ export interface MaskRect {
   y: number;
   width: number;
   height: number;
+  /**
+   * Shape used to clip the background within this rect.
+   * - 'rect' (default if absent) — sharp rectangle
+   * - 'rounded' — rectangle with `cornerRadius` rounded corners
+   * - 'ellipse' — ellipse inscribed in the rect
+   */
+  shape?: 'rect' | 'rounded' | 'ellipse';
+  /** Corner radius in canvas pixels for `shape: 'rounded'`. Defaults to 8. */
+  cornerRadius?: number;
 }
 
 /**

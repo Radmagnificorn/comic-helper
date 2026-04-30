@@ -64,6 +64,20 @@
     if (!frame) return;
     dispatch('change', { frame: { ...frame, background: null } });
   }
+  function setMaskShape(shape: 'rect' | 'rounded' | 'ellipse') {
+    if (!frame || !frame.background) return;
+    const bg = frame.background;
+    const baseMask = bg.mask ?? { x: 0, y: 0, width: frame.width, height: frame.height };
+    const newMask = { ...baseMask, shape, cornerRadius: baseMask.cornerRadius ?? 8 };
+    dispatch('change', { frame: { ...frame, background: { ...bg, mask: newMask } } });
+  }
+  function setMaskCornerRadius(r: number) {
+    if (!frame || !frame.background) return;
+    const bg = frame.background;
+    const baseMask = bg.mask ?? { x: 0, y: 0, width: frame.width, height: frame.height };
+    const cr = Math.max(0, Math.min(256, Math.round(r)));
+    dispatch('change', { frame: { ...frame, background: { ...bg, mask: { ...baseMask, shape: 'rounded', cornerRadius: cr } } } });
+  }
 
   // ── Layers ────────────────────────────────────────────────────
   function addCharacter(assetId: string) {
@@ -217,6 +231,43 @@
           <span class="adjust-hint">Drag the box to move it · drag the corners or edges to resize</span>
         {/if}
       </div>
+      {@const maskShape = frame.background.mask?.shape ?? 'rect'}
+      <div class="mask-shape-row">
+        <span class="mask-shape-label">Mask shape</span>
+        <div class="mask-shape-buttons">
+          <button
+            class="shape-btn"
+            class:active={maskShape === 'rect'}
+            title="Rectangle"
+            on:click={() => setMaskShape('rect')}
+          >▭</button>
+          <button
+            class="shape-btn"
+            class:active={maskShape === 'rounded'}
+            title="Rounded rectangle"
+            on:click={() => setMaskShape('rounded')}
+          >▢</button>
+          <button
+            class="shape-btn"
+            class:active={maskShape === 'ellipse'}
+            title="Ellipse"
+            on:click={() => setMaskShape('ellipse')}
+          >◯</button>
+        </div>
+        {#if maskShape === 'rounded'}
+          <label class="corner-radius">
+            <span>Radius</span>
+            <input
+              type="number"
+              min="0"
+              max="256"
+              step="1"
+              value={frame.background.mask?.cornerRadius ?? 8}
+              on:change={e => setMaskCornerRadius(parseInt((e.target as HTMLInputElement).value, 10) || 0)}
+            />
+          </label>
+        {/if}
+      </div>
     {/if}
     <select
       class="picker"
@@ -360,6 +411,29 @@
   .adjust-btn.active { background: #5a3a1e; border-color: #b07a3a; color: #ffd9a0; }
   .adjust-btn.active:hover:not(:disabled) { background: #7a5028; border-color: #d09a4a; }
   .adjust-hint { font-size: 0.7rem; color: #9090b0; line-height: 1.3; }
+
+  /* Mask shape picker */
+  .mask-shape-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 4px 0 6px;
+  }
+  .mask-shape-label { font-size: 0.78rem; color: #b0b0d0; }
+  .mask-shape-buttons { display: flex; gap: 4px; }
+  .shape-btn {
+    width: 28px; height: 28px; padding: 0;
+    background: #1a1a30; color: #c0c0e0;
+    border: 1px solid #4a4a6a; border-radius: 4px;
+    font-size: 1.05rem; line-height: 1; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .shape-btn:hover { background: #25254a; border-color: #6a6a8a; }
+  .shape-btn.active { background: #5a3a1e; border-color: #b07a3a; color: #ffd9a0; }
+  .corner-radius { display: inline-flex; align-items: center; gap: 4px; font-size: 0.75rem; color: #b0b0d0; }
+  .corner-radius input {
+    width: 56px; background: #16162a; color: #e0e0f0;
+    border: 1px solid #4a4a6a; border-radius: 3px;
+    padding: 2px 4px; font-size: 0.78rem;
+  }
 
   /* Layers */
   .layers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }

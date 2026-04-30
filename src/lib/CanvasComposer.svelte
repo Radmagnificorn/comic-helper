@@ -203,6 +203,11 @@
       // We keep references for the adjust-mode overlay so it can render last.
       let adjustKBg: Konva.Image | null = null;
       let adjustBgRef: { img: HTMLImageElement; bg: FrameBackground; mask: { x: number; y: number; width: number; height: number } } | null = null;
+      // Reference to the background's clipped group + a flag for whether the
+      // mask is implicit (auto-fits the whole frame). Used by the resize
+      // handle's dragmove to keep the bg visible as the frame grows/shrinks.
+      let bgClipGroup: Konva.Group | null = null;
+      let bgMaskImplicit = false;
 
       if (frame.background) {
         const bgAsset = getAsset(frame.background.assetId);
@@ -241,6 +246,8 @@
           }
           bgGroup.add(kBg);
           group.add(bgGroup);
+          bgClipGroup = bgGroup;
+          bgMaskImplicit = !bg.mask;
 
           if (inAdjustMode) {
             adjustKBg = kBg;
@@ -351,28 +358,61 @@
       });
       handle.on('mouseenter', () => { stage.container().style.cursor = 'ns-resize'; });
       handle.on('mouseleave', () => { stage.container().style.cursor = ''; });
+      // Lock the viewport scroll while dragging the resize handle. Without
+      // this, growing/shrinking the last frame can cause the browser to
+      // auto-scroll as the stage's height changes mid-drag, making it hard
+      // to maintain control of the pointer.
+      let lockedScroll: { sl: number; st: number } | null = null;
+      let prevOverflow = '';
+      const onScrollLock = () => {
+        if (!lockedScroll || !viewport) return;
+        if (viewport.scrollLeft !== lockedScroll.sl) viewport.scrollLeft = lockedScroll.sl;
+        if (viewport.scrollTop !== lockedScroll.st) viewport.scrollTop = lockedScroll.st;
+      };
+      handle.on('dragstart', () => {
+        if (!viewport) return;
+        lockedScroll = { sl: viewport.scrollLeft, st: viewport.scrollTop };
+        // Disable scrolling entirely while dragging — this prevents the
+        // viewport from reflowing as the stage's height changes (which can
+        // hide/show scrollbars or shift the pointer hit-target).
+        prevOverflow = viewport.style.overflow;
+        viewport.style.overflow = 'hidden';
+        viewport.addEventListener('scroll', onScrollLock);
+      });
       handle.on('dragmove', () => {
+        // IMPORTANT: only update visuals INSIDE the existing stage. Do NOT
+        // change `stage.height(...)` here — resizing the stage element
+        // changes the document layout under the cursor (the .stage-host /
+        // .stage-pad / .viewport box-model reflow), which on some browsers
+        // triggers auto-scroll behaviour as the pointer is approached
+        // toward the edge of the viewport. The stage size is committed
+        // once on dragend instead.
         const newHeight = Math.round(handle.y());
-        // Live-update: resize bg rect & shift later frame groups
         bgRect.height(newHeight);
+        // If the bg image's mask is implicit (auto = full frame), expand its
+        // clip so the background fills the resized frame live.
+        if (bgClipGroup && bgMaskImplicit) {
+          bgClipGroup.clip({ x: 0, y: 0, width: frame.width, height: newHeight });
+        }
         if (frame.id === selectedFrameId) {
-          // Update selection outline if present
           const outlineNode = group.findOne((n: any) => n instanceof Konva.Rect && n.stroke() === '#7070ff') as Konva.Rect | undefined;
           if (outlineNode) outlineNode.height(newHeight);
         }
-        // Shift all subsequent frame groups
+        // Shift subsequent frame groups so the live preview reflects the new stack.
         const delta = newHeight - frame.height;
         for (let k = i + 1; k < frames.length; k++) {
           const otherGroup = frameGroups.get(frames[k].id);
           if (otherGroup) otherGroup.y(frameOffsetY(k) + delta);
         }
-        // Resize stage if growing
-        const newTotal = totalCanvasHeight() + delta;
-        stage.height((newTotal + STAGE_BOTTOM_PADDING) * displayScale * zoom);
         layer.batchDraw();
       });
       handle.on('dragend', () => {
         const newHeight = Math.max(8, Math.round(handle.y()));
+        if (viewport) {
+          viewport.removeEventListener('scroll', onScrollLock);
+          viewport.style.overflow = prevOverflow;
+        }
+        lockedScroll = null;
         dispatch('resize', { id: frame.id, height: newHeight });
       });
       group.add(handle);
@@ -1161,6 +1201,9 @@
   .viewport { flex: 1; overflow: auto; background: #0a0a14; touch-action: pan-x pan-y; position: relative; }
   .stage-pad {
     padding: 24px;
+    /* Extra space below the canvas so the user can scroll past it and have
+       room to drag the bottom-edge resize handle of the last frame down. */
+    padding-bottom: 25vh;
     box-sizing: border-box;
     /* Center the stage horizontally inside the scrollable viewport while
        still letting it overflow naturally when zoomed past viewport width. */

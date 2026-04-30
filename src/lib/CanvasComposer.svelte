@@ -548,36 +548,67 @@
   const TAIL_HANDLE_R = 3;
 
   function renderBubble(group: Konva.Group, frame: Frame, bubble: SpeechBubble) {
-    // Build the text first so we can measure it for the background rect.
-    const text = new Konva.Text({
-      x: BUBBLE_PAD,
-      y: BUBBLE_PAD,
-      text: bubble.text || ' ',
-      fontFamily: BUBBLE_FONT,
-      fontSize: bubble.fontSize,
-      fill: '#000000',
-      lineHeight: 1.0,
-      listening: false,
-    });
-    const tw = Math.ceil(text.width());
-    const th = Math.ceil(text.height());
+    // Measure text at native (1x) resolution using a plain canvas context so
+    // the bubble is composed at the same pixel scale as the rest of the
+    // pixel-art and then upscaled with nearest-neighbor.
+    const text = bubble.text || ' ';
+    const lines = text.split('\n');
+    const lineHeight = bubble.fontSize; // matches old Konva.Text lineHeight 1.0
+    const measureCanvas = document.createElement('canvas');
+    const mctx = measureCanvas.getContext('2d')!;
+    mctx.font = `${bubble.fontSize}px "${BUBBLE_FONT}"`;
+    const tw = Math.ceil(Math.max(0, ...lines.map(l => mctx.measureText(l).width)));
+    const th = Math.ceil(lines.length * lineHeight);
     const bgW = tw + BUBBLE_PAD * 2;
     const bgH = th + BUBBLE_PAD * 2;
 
-    // Mutable tail tip in bubble-local coords. Updated live while dragging the
-    // tip handle so the shape's sceneFunc redraws with the new tail.
+    // Mutable tail tip in bubble-local coords (relative to bubble.x/y, the
+    // top-left of the rect). Updated live while dragging the tip handle so we
+    // can re-rasterize the bubble.
     const tip = { x: bubble.tailX - bubble.x, y: bubble.tailY - bubble.y };
 
-    const bg = new Konva.Shape({
-      x: 0, y: 0,
-      fill: '#ffffff',
-      stroke: '#000000',
-      strokeWidth: 1,
-      sceneFunc: (ctx, sh) => {
-        drawBubblePath(ctx as unknown as CanvasRenderingContext2D, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y);
-        (ctx as any).fillStrokeShape(sh);
-      },
-      listening: false,
+    /**
+     * Rasterize the bubble + tail onto an offscreen canvas at native (1x)
+     * resolution. Returns the canvas plus the offset (in bubble-local coords)
+     * from bubble.x/y to the canvas's top-left, so the caller can position the
+     * resulting Konva.Image correctly.
+     */
+    function buildBubbleCanvas() {
+      // Canvas must be big enough to contain both the rect (0,0)-(bgW,bgH) and
+      // the tail tip, which can extend outside the rect in any direction.
+      const minX = Math.floor(Math.min(0, tip.x));
+      const minY = Math.floor(Math.min(0, tip.y));
+      const maxX = Math.ceil(Math.max(bgW, tip.x + 1));
+      const maxY = Math.ceil(Math.max(bgH, tip.y + 1));
+      const cw = Math.max(1, maxX - minX);
+      const ch = Math.max(1, maxY - minY);
+      const c = document.createElement('canvas');
+      c.width = cw;
+      c.height = ch;
+      const ctx = c.getContext('2d')!;
+      ctx.imageSmoothingEnabled = false;
+      ctx.translate(-minX, -minY);
+      drawBubblePath(ctx, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.fillStyle = '#000000';
+      ctx.font = `${bubble.fontSize}px "${BUBBLE_FONT}"`;
+      ctx.textBaseline = 'top';
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], BUBBLE_PAD, BUBBLE_PAD + i * lineHeight);
+      }
+      return { canvas: c, offX: minX, offY: minY };
+    }
+
+    let built = buildBubbleCanvas();
+    const kImg = new Konva.Image({
+      image: built.canvas,
+      x: built.offX,
+      y: built.offY,
+      width: built.canvas.width,
+      height: built.canvas.height,
+      imageSmoothingEnabled: false,
+      listening: true,
     });
 
     const bGroup = new Konva.Group({
@@ -585,8 +616,7 @@
       y: bubble.y,
       draggable: frame.id !== bgAdjustFrameId,
     });
-    bGroup.add(bg);
-    bGroup.add(text);
+    bGroup.add(kImg);
     bGroup.dragBoundFunc((pos) => {
       const groupAbs = group.getAbsolutePosition();
       const scale = stage.scaleX();
@@ -650,9 +680,13 @@
     });
     tipHandle.on('dragmove', () => {
       // Update the live tail position relative to the bubble origin and
-      // request a redraw so the bubble shape's sceneFunc picks up the change.
+      // re-rasterize the bubble at native resolution so the tail follows.
       tip.x = tipHandle.x() - bGroup.x();
       tip.y = tipHandle.y() - bGroup.y();
+      built = buildBubbleCanvas();
+      kImg.image(built.canvas);
+      kImg.position({ x: built.offX, y: built.offY });
+      kImg.size({ width: built.canvas.width, height: built.canvas.height });
       layer.batchDraw();
     });
     tipHandle.on('dragend', () => {

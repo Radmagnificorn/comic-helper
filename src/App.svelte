@@ -38,6 +38,47 @@
     activeDrawer = activeDrawer === t ? null : t;
   }
 
+  // ── Drawer height (user-resizable, persisted) ──────────────────
+  const DRAWER_MIN = 120;
+  const DRAWER_MAX_VH_FRACTION = 0.8; // never let the drawer eat more than 80% of the viewport
+  const DRAWER_HEIGHT_KEY = 'comic-helper:drawerHeight';
+  let drawerHeight = 220;
+  if (typeof localStorage !== 'undefined') {
+    const stored = Number(localStorage.getItem(DRAWER_HEIGHT_KEY));
+    if (Number.isFinite(stored) && stored >= DRAWER_MIN) drawerHeight = stored;
+  }
+  function clampDrawerHeight(h: number): number {
+    const max = typeof window !== 'undefined'
+      ? Math.max(DRAWER_MIN, Math.floor(window.innerHeight * DRAWER_MAX_VH_FRACTION))
+      : 800;
+    return Math.max(DRAWER_MIN, Math.min(max, Math.round(h)));
+  }
+  function startDrawerResize(e: PointerEvent) {
+    // Only handle primary pointer (left mouse / first touch).
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = drawerHeight;
+    const target = e.currentTarget as HTMLElement;
+    const onMove = (ev: PointerEvent) => {
+      // Drag up = bigger drawer, drag down = smaller drawer.
+      drawerHeight = clampDrawerHeight(startH + (startY - ev.clientY));
+    };
+    const onUp = () => {
+      target.removeEventListener('pointermove', onMove);
+      target.removeEventListener('pointerup', onUp);
+      target.removeEventListener('pointercancel', onUp);
+      try { target.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(DRAWER_HEIGHT_KEY, String(drawerHeight));
+      }
+    };
+    try { target.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    target.addEventListener('pointermove', onMove);
+    target.addEventListener('pointerup', onUp);
+    target.addEventListener('pointercancel', onUp);
+  }
+
   let composerRef: CanvasComposer;
 
   $: currentFrame = frames.find(f => f.id === selectedFrameId) ?? null;
@@ -102,6 +143,20 @@
     selectedFrameId = null;
   }
 
+  /**
+   * Replace `currentProject` with a new value AND mirror the change into the
+   * `projects` array. Without this, mutating currentProject (e.g. attaching a
+   * library, adding a frame, creating an asset) would not be reflected if the
+   * user closes and re-opens the project within the same session — the stale
+   * entry in `projects` would be reloaded by `openProject`, and any newly
+   * attached libraries / project-private assets / frames would appear to be
+   * lost until a full page reload re-read them from IndexedDB.
+   */
+  function setCurrentProject(updated: Project) {
+    currentProject = updated;
+    projects = projects.map(p => p.id === updated.id ? updated : p);
+  }
+
   // ── Frame ops ──────────────────────────────────────────────────
   async function addFrame() {
     if (!currentProject) return;
@@ -119,7 +174,7 @@
     frames = [...frames, f];
     const updated: Project = { ...currentProject, frameIds: [...currentProject.frameIds, id], updatedAt: Date.now() };
     await saveProject(updated);
-    currentProject = updated;
+    setCurrentProject(updated);
     selectedFrameId = id;
   }
 
@@ -130,7 +185,7 @@
     frames = frames.filter(f => f.id !== id);
     const updated: Project = { ...currentProject, frameIds: currentProject.frameIds.filter(i => i !== id), updatedAt: Date.now() };
     await saveProject(updated);
-    currentProject = updated;
+    setCurrentProject(updated);
     if (selectedFrameId === id) selectedFrameId = frames[0]?.id ?? null;
   }
 
@@ -146,7 +201,7 @@
     frames = arr;
     const updated: Project = { ...currentProject, frameIds: arr.map(f => f.id), updatedAt: Date.now() };
     await saveProject(updated);
-    currentProject = updated;
+    setCurrentProject(updated);
   }
 
   async function handleFrameChange(e: CustomEvent<{ frame: Frame }>) {
@@ -193,7 +248,7 @@
       projectAssets = [...projectAssets, asset];
       const updated: Project = { ...currentProject, assetIds: [...currentProject.assetIds, id], updatedAt: Date.now() };
       await saveProject(updated);
-      currentProject = updated;
+      setCurrentProject(updated);
     } else {
       const lib = libraries.find(l => l.id === libraryId);
       if (!lib) return;
@@ -252,7 +307,7 @@
       projectAssets = projectAssets.filter(a => a.id !== assetId);
       const updated: Project = { ...currentProject, assetIds: currentProject.assetIds.filter(i => i !== assetId), updatedAt: Date.now() };
       await saveProject(updated);
-      currentProject = updated;
+      setCurrentProject(updated);
     } else {
       const lib = libraries.find(l => l.id === container);
       if (lib) {
@@ -275,7 +330,7 @@
     // user can immediately add assets to it.
     const updated: Project = { ...currentProject, libraryIds: [...(currentProject.libraryIds ?? []), id], updatedAt: Date.now() };
     await saveProject(updated);
-    currentProject = updated;
+    setCurrentProject(updated);
     libraryAssets = { ...libraryAssets, [id]: [] };
   }
 
@@ -288,7 +343,7 @@
     const loaded = await getAssets(lib.assetIds);
     const updated: Project = { ...currentProject, libraryIds: [...(currentProject.libraryIds ?? []), libraryId], updatedAt: Date.now() };
     await saveProject(updated);
-    currentProject = updated;
+    setCurrentProject(updated);
     libraryAssets = { ...libraryAssets, [libraryId]: loaded };
   }
 
@@ -297,7 +352,7 @@
     const { libraryId } = e.detail;
     const updated: Project = { ...currentProject, libraryIds: (currentProject.libraryIds ?? []).filter(id => id !== libraryId), updatedAt: Date.now() };
     await saveProject(updated);
-    currentProject = updated;
+    setCurrentProject(updated);
     const next = { ...libraryAssets };
     delete next[libraryId];
     libraryAssets = next;
@@ -312,7 +367,7 @@
     libraryAssets = next;
     if (currentProject && (currentProject.libraryIds ?? []).includes(libraryId)) {
       const updated: Project = { ...currentProject, libraryIds: (currentProject.libraryIds ?? []).filter(id => id !== libraryId), updatedAt: Date.now() };
-      currentProject = updated;
+      setCurrentProject(updated);
     }
     // Other projects in `projects` may still reference the deleted library;
     // db.deleteAssetLibrary already detached them in IDB. Reflect that here.
@@ -382,7 +437,14 @@
     </main>
 
     {#if activeDrawer}
-      <section class="drawer">
+      <section class="drawer" style="height: {drawerHeight}px;">
+        <div
+          class="drawer-grip"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize panel"
+          on:pointerdown={startDrawerResize}
+        ><span class="drawer-grip-handle"></span></div>
         <header class="drawer-header">
           <span class="drawer-title">
             {#if activeDrawer === 'inspector'}
@@ -479,8 +541,24 @@
   .canvas-area { flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: #0f0f1e; display: flex; flex-direction: column; }
 
   /* Bottom drawer */
-  .drawer { flex-shrink: 0; max-height: 25vh; min-height: 160px; display: flex; flex-direction: column;
+  .drawer { flex-shrink: 0; min-height: 120px; display: flex; flex-direction: column;
     background: #16162a; border-top: 1px solid #2a2a40; box-shadow: 0 -4px 16px rgba(0,0,0,0.3); }
+  .drawer-grip {
+    flex-shrink: 0;
+    height: 10px;
+    cursor: ns-resize;
+    display: flex; align-items: center; justify-content: center;
+    background: #1a1a2e;
+    border-bottom: 1px solid #2a2a40;
+    touch-action: none;
+    user-select: none;
+  }
+  .drawer-grip:hover { background: #22223a; }
+  .drawer-grip-handle {
+    display: block; width: 36px; height: 3px; border-radius: 2px;
+    background: #4a4a6a;
+  }
+  .drawer-grip:hover .drawer-grip-handle { background: #7070cc; }
   .drawer-header { display: flex; align-items: center; justify-content: space-between;
     padding: 6px 12px; background: #1a1a2e; border-bottom: 1px solid #2a2a40; flex-shrink: 0; }
   .drawer-title { font-size: 0.85rem; font-weight: 600; color: #c0c0e0; }

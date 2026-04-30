@@ -716,6 +716,24 @@
       drawBubblePath(ctx, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y, base);
       ctx.fillStyle = '#ffffff';
       ctx.fill();
+      // Canvas path rendering is always anti-aliased, which leaves
+      // partially-transparent pixels along the rounded corners and the
+      // diagonal tail edges. When the comic is upscaled with nearest
+      // neighbor for export those AA pixels become visible "dithered" /
+      // fuzzy edges. Snap the alpha channel to {0, 255} so the bubble
+      // shape is strictly 1-bit. We do this BEFORE drawing the text so
+      // the text retains its grayscale anti-aliasing against the white
+      // bubble background.
+      const shapeImg = ctx.getImageData(0, 0, c.width, c.height);
+      const sd = shapeImg.data;
+      for (let i = 0; i < sd.length; i += 4) {
+        if (sd[i + 3] >= 128) {
+          sd[i] = 255; sd[i + 1] = 255; sd[i + 2] = 255; sd[i + 3] = 255;
+        } else {
+          sd[i + 3] = 0;
+        }
+      }
+      ctx.putImageData(shapeImg, 0, 0);
       ctx.fillStyle = '#000000';
       ctx.font = `${bubble.fontSize}px "${BUBBLE_FONT}"`;
       ctx.textBaseline = 'top';

@@ -72,10 +72,20 @@ Reassign arrays/objects to trigger Svelte reactivity (e.g.
 `frames = frames.map(...)` instead of mutating in place). This pattern is used
 consistently throughout `App.svelte`.
 
+When mutating the open project, use the `setCurrentProject(updated)` helper
+instead of assigning `currentProject = updated` directly. The helper also
+updates the matching entry in the `projects` array so that closing and
+re-opening the project within the same session sees the latest
+`libraryIds` / `assetIds` / `frameIds` (otherwise newly-attached libraries or
+project-private assets appear to vanish until a full page reload).
+
 UI shape: a top bar (project title, Add Frame, Export), the canvas area
 (`CanvasComposer`), an optional bottom **drawer** showing exactly one of
 `FrameInspector` or `AssetPanel`, and a bottom **tab bar** that toggles which
-drawer is open. Only one drawer panel is ever visible at a time.
+drawer is open. Only one drawer panel is ever visible at a time. The drawer
+has a draggable grip at its top edge (`startDrawerResize` in `App.svelte`);
+the chosen height is persisted in `localStorage` under
+`comic-helper:drawerHeight`.
 
 ### Persistence (`src/db.ts`)
 
@@ -151,7 +161,12 @@ This is the largest and most complex file (~1000 lines). Key facts:
   using the bundled pixel font, with a draggable tail tip. The tail base
   midpoint (`tailBaseX/Y`) is persisted and lags the tip by up to
   `TAIL_LEAD` (6 px) along its edge so the tail can be angled; the base
-  snaps to a new edge when the tip clearly crosses sides.
+  snaps to a new edge when the tip clearly crosses sides. The bubble shape
+  is rasterized to an offscreen canvas and its alpha channel is thresholded
+  to {0, 255} after the fill (in `buildBubbleCanvas`) so the rounded corners
+  and tail edges stay 1-bit and don't show fuzzy "dithered" pixels when the
+  comic is upscaled. Text is drawn after the threshold so it keeps its
+  normal anti-aliasing against the white background.
 - **Export**: stacked PNG of all frames at native (1x) resolution; optional
   4x / 8x nearest-neighbor upscale chosen from a select next to the Export
   button. UI overlay elements (handles, selection outline) are excluded.

@@ -79,19 +79,22 @@ drawer is open. Only one drawer panel is ever visible at a time.
 
 ### Persistence (`src/db.ts`)
 
-Database name: `comic-helper`, version `1`. Object stores:
+Database name: `comic-helper`, version `2`. Object stores:
 
-| Store         | Key path | Value                                                  |
-|---------------|----------|--------------------------------------------------------|
-| `projects`    | `id`     | `Project`                                              |
-| `frames`      | `id`     | `Frame`                                                |
-| `assets`      | `id`     | `Asset` **without** its `images` (metadata only)       |
-| `assetImages` | `id`     | `{ id, assetId, name, blob }` — image blobs split out  |
+| Store            | Key path | Value                                                  |
+|------------------|----------|--------------------------------------------------------|
+| `projects`       | `id`     | `Project`                                              |
+| `frames`         | `id`     | `Frame`                                                |
+| `assets`         | `id`     | `Asset` **without** its `images` (metadata only)       |
+| `assetImages`    | `id`     | `{ id, assetId, name, blob }` — image blobs split out  |
+| `assetLibraries` | `id`     | `AssetLibrary` — shared, top-level groups of assets    |
 
 Asset images are stored separately so that loading an asset list doesn't pull
 every blob into memory at once. `getAssets(ids)` re-joins them. `deleteProject`
-cascades to its frames and assets in a single transaction; `deleteAsset`
-cascades to that asset's images.
+cascades to its frames and **project-private** assets only — library-owned
+assets are left alone so other projects keep working. `deleteAsset` cascades to
+that asset's images. `deleteAssetLibrary` cascades to its assets + their images
+and detaches the library from every project that has it attached.
 
 If you change any persisted shape in `types.ts`, **bump the IDB version in
 `db.ts` and add an `upgrade` migration** — there is no migration framework.
@@ -133,9 +136,22 @@ This is the largest and most complex file (~1000 lines). Key facts:
 - **Assets**: two types — `character` and `background`. Each asset holds
   multiple image variants (`AssetImage[]`). Backgrounds are assigned to a
   frame as a `FrameBackground` with pan offset + clipping `mask`. Characters
-  are placed as `FrameLayer`s with `x/y` and optional `flippedX`.
+  are placed as `FrameLayer`s with `x/y` and optional `flippedX`. Assets live
+  either in a project's private `assetIds` list or inside a shared
+  `AssetLibrary`; `App.svelte` merges both into the `assets` prop passed to
+  the canvas / inspector.
+- **Asset libraries**: top-level `AssetLibrary` records are persisted
+  independently of projects. A project's `libraryIds` lists the libraries
+  attached to it. `AssetPanel` renders a section for project-private assets
+  plus one section per attached library, and exposes create / attach /
+  detach / delete library controls. Detaching only removes the link; deleting
+  removes the library + its assets globally and detaches it from every
+  project.
 - **Speech bubbles**: per-frame `SpeechBubble[]` rendered on top of layers,
-  using the bundled pixel font, with a draggable tail tip.
+  using the bundled pixel font, with a draggable tail tip. The tail base
+  midpoint (`tailBaseX/Y`) is persisted and lags the tip by up to
+  `TAIL_LEAD` (6 px) along its edge so the tail can be angled; the base
+  snaps to a new edge when the tip clearly crosses sides.
 - **Export**: stacked PNG of all frames at native (1x) resolution; optional
   4x / 8x nearest-neighbor upscale chosen from a select next to the Export
   button. UI overlay elements (handles, selection outline) are excluded.

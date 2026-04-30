@@ -1,26 +1,50 @@
-<!-- AssetPanel.svelte – manage character and background assets -->
+<!-- AssetPanel.svelte – manage project-private assets and shared libraries -->
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import type { Asset, AssetImage } from '../types';
+  import type { Asset, AssetLibrary } from '../types';
 
-  export let assets: Asset[] = [];
+  /** Assets owned exclusively by the current project. */
+  export let projectAssets: Asset[] = [];
+  /** Libraries currently attached to the project (in order). */
+  export let attachedLibraries: AssetLibrary[] = [];
+  /** Loaded assets per attached libraryId. */
+  export let libraryAssets: Record<string, Asset[]> = {};
+  /** Libraries that exist but are not attached — selectable from the picker. */
+  export let availableLibraries: AssetLibrary[] = [];
 
   const dispatch = createEventDispatcher<{
-    createAsset: { name: string; type: 'character' | 'background' };
+    createAsset: { name: string; type: 'character' | 'background'; libraryId: string | null };
     uploadImages: { assetId: string; files: FileList };
     deleteImage: { assetId: string; imageId: string };
     deleteAsset: { assetId: string };
+    createLibrary: { name: string };
+    attachLibrary: { libraryId: string };
+    detachLibrary: { libraryId: string };
+    deleteLibrary: { libraryId: string };
   }>();
 
-  let newName = '';
-  let newType: 'character' | 'background' = 'character';
+  // Per-section "add asset" form state, keyed by container id
+  // ('__project' for project-private, libraryId otherwise).
+  const PROJECT_KEY = '__project';
+  let newName: Record<string, string> = {};
+  let newType: Record<string, 'character' | 'background'> = {};
   let expandedId: string | null = null;
 
-  function handleCreate() {
-    const name = newName.trim();
+  // Library management form state
+  let newLibraryName = '';
+  let attachLibrarySelection = '';
+
+  function containerKey(libraryId: string | null): string {
+    return libraryId ?? PROJECT_KEY;
+  }
+
+  function handleCreate(libraryId: string | null) {
+    const key = containerKey(libraryId);
+    const name = (newName[key] ?? '').trim();
     if (!name) return;
-    dispatch('createAsset', { name, type: newType });
-    newName = '';
+    const type = newType[key] ?? 'character';
+    dispatch('createAsset', { name, type, libraryId });
+    newName = { ...newName, [key]: '' };
   }
 
   function handleUpload(assetId: string, e: Event) {
@@ -33,57 +57,187 @@
   function blobUrl(blob: Blob) {
     return URL.createObjectURL(blob);
   }
+
+  function handleCreateLibrary() {
+    const name = newLibraryName.trim();
+    if (!name) return;
+    dispatch('createLibrary', { name });
+    newLibraryName = '';
+  }
+
+  function handleAttachLibrary() {
+    if (!attachLibrarySelection) return;
+    dispatch('attachLibrary', { libraryId: attachLibrarySelection });
+    attachLibrarySelection = '';
+  }
+
+  function confirmDeleteLibrary(lib: AssetLibrary) {
+    const ok = confirm(`Delete library "${lib.name}" and all of its assets? This affects every project that uses it.`);
+    if (ok) dispatch('deleteLibrary', { libraryId: lib.id });
+  }
 </script>
 
 <div class="asset-panel">
-  <h3>Assets</h3>
+  <!-- ── Project-private assets ───────────────────────────────── -->
+  <div class="section-header"><span>Project assets</span></div>
 
   <div class="create-row">
-    <input bind:value={newName} placeholder="Asset name" on:keydown={e => e.key === 'Enter' && handleCreate()} />
-    <select bind:value={newType}>
+    <input
+      bind:value={newName[PROJECT_KEY]}
+      placeholder="Asset name"
+      on:keydown={e => e.key === 'Enter' && handleCreate(null)}
+    />
+    <select bind:value={newType[PROJECT_KEY]}>
       <option value="character">Character</option>
       <option value="background">Background</option>
     </select>
-    <button on:click={handleCreate}>+ Add</button>
+    <button on:click={() => handleCreate(null)}>+ Add</button>
   </div>
 
-  <ul class="asset-list">
-    {#each assets as asset (asset.id)}
-      <li class="asset-item">
-        <button class="asset-header" on:click={() => expandedId = expandedId === asset.id ? null : asset.id}>
-          <span class="asset-type-badge {asset.type}">{asset.type[0].toUpperCase()}</span>
-          <span class="asset-name">{asset.name}</span>
-          <span class="icon-btn danger" role="button" tabindex="0"
-            on:click|stopPropagation={() => dispatch('deleteAsset', { assetId: asset.id })}
-            on:keydown={e => e.key === 'Enter' && dispatch('deleteAsset', { assetId: asset.id })}>✕</span>
-        </button>
+  {#if projectAssets.length === 0}
+    <p class="empty small">No project-private assets yet.</p>
+  {:else}
+    <ul class="asset-list">
+      {#each projectAssets as asset (asset.id)}
+        <li class="asset-item">
+          <button class="asset-header" on:click={() => expandedId = expandedId === asset.id ? null : asset.id}>
+            <span class="asset-type-badge {asset.type}">{asset.type[0].toUpperCase()}</span>
+            <span class="asset-name">{asset.name}</span>
+            <span class="icon-btn danger" role="button" tabindex="0"
+              on:click|stopPropagation={() => dispatch('deleteAsset', { assetId: asset.id })}
+              on:keydown={e => e.key === 'Enter' && dispatch('deleteAsset', { assetId: asset.id })}>✕</span>
+          </button>
 
-        {#if expandedId === asset.id}
-          <div class="asset-images">
-            {#each asset.images as img (img.id)}
-              <div class="thumb-wrap">
-                <img src={blobUrl(img.blob)} alt={img.name} class="thumb" />
-                <span class="thumb-label">{img.name}</span>
-                <button class="icon-btn danger thumb-del" on:click={() => dispatch('deleteImage', { assetId: asset.id, imageId: img.id })}>✕</button>
+          {#if expandedId === asset.id}
+            <div class="asset-images">
+              {#each asset.images as img (img.id)}
+                <div class="thumb-wrap">
+                  <img src={blobUrl(img.blob)} alt={img.name} class="thumb" />
+                  <span class="thumb-label">{img.name}</span>
+                  <button class="icon-btn danger thumb-del" on:click={() => dispatch('deleteImage', { assetId: asset.id, imageId: img.id })}>✕</button>
+                </div>
+              {/each}
+
+              <label class="upload-btn">
+                + Upload
+                <input type="file" accept="image/*" multiple on:change={e => handleUpload(asset.id, e)} hidden />
+              </label>
+            </div>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
+  <!-- ── Attached libraries ──────────────────────────────────── -->
+  {#each attachedLibraries as lib (lib.id)}
+    <div class="section-header library">
+      <span>📚 {lib.name}</span>
+      <span class="lib-actions">
+        <button class="lib-btn" title="Detach library from this project" on:click={() => dispatch('detachLibrary', { libraryId: lib.id })}>Detach</button>
+        <button class="lib-btn danger" title="Permanently delete this library" on:click={() => confirmDeleteLibrary(lib)}>Delete</button>
+      </span>
+    </div>
+
+    <div class="create-row">
+      <input
+        bind:value={newName[lib.id]}
+        placeholder="Asset name"
+        on:keydown={e => e.key === 'Enter' && handleCreate(lib.id)}
+      />
+      <select bind:value={newType[lib.id]}>
+        <option value="character">Character</option>
+        <option value="background">Background</option>
+      </select>
+      <button on:click={() => handleCreate(lib.id)}>+ Add</button>
+    </div>
+
+    {#if (libraryAssets[lib.id] ?? []).length === 0}
+      <p class="empty small">No assets in this library yet.</p>
+    {:else}
+      <ul class="asset-list">
+        {#each libraryAssets[lib.id] ?? [] as asset (asset.id)}
+          <li class="asset-item">
+            <button class="asset-header" on:click={() => expandedId = expandedId === asset.id ? null : asset.id}>
+              <span class="asset-type-badge {asset.type}">{asset.type[0].toUpperCase()}</span>
+              <span class="asset-name">{asset.name}</span>
+              <span class="icon-btn danger" role="button" tabindex="0"
+                on:click|stopPropagation={() => dispatch('deleteAsset', { assetId: asset.id })}
+                on:keydown={e => e.key === 'Enter' && dispatch('deleteAsset', { assetId: asset.id })}>✕</span>
+            </button>
+
+            {#if expandedId === asset.id}
+              <div class="asset-images">
+                {#each asset.images as img (img.id)}
+                  <div class="thumb-wrap">
+                    <img src={blobUrl(img.blob)} alt={img.name} class="thumb" />
+                    <span class="thumb-label">{img.name}</span>
+                    <button class="icon-btn danger thumb-del" on:click={() => dispatch('deleteImage', { assetId: asset.id, imageId: img.id })}>✕</button>
+                  </div>
+                {/each}
+
+                <label class="upload-btn">
+                  + Upload
+                  <input type="file" accept="image/*" multiple on:change={e => handleUpload(asset.id, e)} hidden />
+                </label>
               </div>
-            {/each}
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {/each}
 
-            <label class="upload-btn">
-              + Upload
-              <input type="file" accept="image/*" multiple on:change={e => handleUpload(asset.id, e)} hidden />
-            </label>
-          </div>
-        {/if}
-      </li>
-    {/each}
-  </ul>
+  <!-- ── Library management ──────────────────────────────────── -->
+  <div class="section-header"><span>Libraries</span></div>
+  <p class="hint-row">Libraries can be attached to multiple projects and are kept when a project is deleted.</p>
+
+  <div class="create-row">
+    <input
+      bind:value={newLibraryName}
+      placeholder="New library name"
+      on:keydown={e => e.key === 'Enter' && handleCreateLibrary()}
+    />
+    <button on:click={handleCreateLibrary}>+ Create library</button>
+  </div>
+
+  {#if availableLibraries.length > 0}
+    <div class="create-row">
+      <select bind:value={attachLibrarySelection}>
+        <option value="">Add existing library…</option>
+        {#each availableLibraries as lib (lib.id)}
+          <option value={lib.id}>{lib.name} ({lib.assetIds.length})</option>
+        {/each}
+      </select>
+      <button on:click={handleAttachLibrary} disabled={!attachLibrarySelection}>Attach</button>
+    </div>
+  {:else if attachedLibraries.length === 0}
+    <p class="empty small">No shared libraries yet — create one above.</p>
+  {/if}
 </div>
 
 <style>
   .asset-panel { display: flex; flex-direction: column; gap: 8px; padding: 8px; overflow-y: auto; color: #e0e0f0; }
-  h3 { margin: 0 0 4px; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; color: #9090b0; }
+  .section-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-top: 8px; padding-bottom: 4px;
+    border-bottom: 1px solid #33334d;
+    font-size: 0.72rem; color: #9090b0;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .section-header:first-child { margin-top: 0; }
+  .section-header.library { color: #a0a0ff; }
+  .lib-actions { display: flex; gap: 4px; }
+  .lib-btn { font-size: 0.68rem; padding: 2px 6px; }
+  .lib-btn.danger { background: #4a1e1e; border-color: #8a3a3a; color: #f0aeae; }
+  .lib-btn.danger:hover:not(:disabled) { background: #6a2a2a; border-color: #b85a5a; }
+
   .create-row { display: flex; gap: 4px; }
   .create-row input { flex: 1; min-width: 0; color: #e0e0f0; }
+  .create-row select { flex: 1; min-width: 0; }
+  .empty.small { color: #6a6a8a; font-size: 0.75rem; text-align: center; padding: 6px; margin: 0; }
+  .hint-row { color: #6a6a8a; font-size: 0.72rem; margin: 0; line-height: 1.3; }
+
   .asset-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   .asset-item { background: #22223a; border-radius: 4px; overflow: hidden; }
   .asset-header { display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: pointer; user-select: none; width: 100%; background: none; border: none; color: #e0e0f0; text-align: left; }

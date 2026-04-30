@@ -101,6 +101,20 @@ export interface Project {
   /** Default background color for new frames */
   bgColor: string;
   frameIds: string[];
+  /** Project-private asset ids (deleted when the project is deleted) */
+  assetIds: string[];
+  /** Shared asset libraries attached to this project. The library and its
+   * assets are NOT owned by the project — detaching or deleting the project
+   * leaves the library intact for other projects to use. */
+  libraryIds?: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A named, top-level group of assets that can be attached to multiple projects. */
+export interface AssetLibrary {
+  id: string;
+  name: string;
   assetIds: string[];
   createdAt: number;
   updatedAt: number;

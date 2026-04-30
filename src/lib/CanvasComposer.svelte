@@ -407,6 +407,10 @@
           e: 'ew-resize', w: 'ew-resize',
         };
         const handleNodes: Record<string, Konva.Rect> = {};
+        // Forward refs to the move handle (created later) so corner drags can
+        // keep it centered on the mask as it resizes.
+        let moveHandleRef: Konva.Rect | null = null;
+        const moveSize = 12;
 
         // Position a single handle from current maskState.
         function handleXY(pos: HandlePos): { x: number; y: number } {
@@ -426,6 +430,10 @@
             const xy = handleXY(p);
             handleNodes[p].x(xy.x);
             handleNodes[p].y(xy.y);
+          }
+          if (moveHandleRef) {
+            moveHandleRef.x(maskState.x + maskState.width / 2 - moveSize / 2);
+            moveHandleRef.y(maskState.y + maskState.height / 2 - moveSize / 2);
           }
         }
 
@@ -524,6 +532,83 @@
 
           group.add(h);
         }
+
+        // ── Center "move" handle: drags the whole mask as a unit ──
+        function moveXY(): { x: number; y: number } {
+          return {
+            x: maskState.x + maskState.width / 2 - moveSize / 2,
+            y: maskState.y + maskState.height / 2 - moveSize / 2,
+          };
+        }
+        const moveHandle = new Konva.Rect({
+          ...moveXY(),
+          width: moveSize, height: moveSize,
+          fill: '#f0a040',
+          stroke: '#1a1a30',
+          strokeWidth: 0.5,
+          cornerRadius: 2,
+          draggable: true,
+          listening: true,
+          name: UI_NODE_NAME,
+        });
+        // Crosshair lines drawn on top of the move handle for affordance.
+        const moveIcon = new Konva.Shape({
+          listening: false,
+          name: UI_NODE_NAME,
+          sceneFunc: (ctx) => {
+            const cx = maskState.x + maskState.width / 2;
+            const cy = maskState.y + maskState.height / 2;
+            const arm = moveSize / 2 - 2;
+            ctx.beginPath();
+            ctx.moveTo(cx - arm, cy);
+            ctx.lineTo(cx + arm, cy);
+            ctx.moveTo(cx, cy - arm);
+            ctx.lineTo(cx, cy + arm);
+            ctx.strokeStyle = '#1a1a30';
+            ctx.lineWidth = 1.2 / (displayScale * zoom);
+            ctx.stroke();
+          },
+        });
+        moveHandle.on('mouseenter', () => { stage.container().style.cursor = 'move'; });
+        moveHandle.on('mouseleave', () => { stage.container().style.cursor = ''; });
+        moveHandle.dragBoundFunc((pos) => {
+          const groupAbs = group.getAbsolutePosition();
+          const s = stage.scaleX();
+          // Local center in frame coords.
+          let cx = (pos.x - groupAbs.x) / s + moveSize / 2;
+          let cy = (pos.y - groupAbs.y) / s + moveSize / 2;
+          // New top-left from center.
+          let nx = cx - maskState.width / 2;
+          let ny = cy - maskState.height / 2;
+          // Clamp so the mask stays inside frame bounds.
+          nx = Math.max(0, Math.min(frame.width - maskState.width, nx));
+          ny = Math.max(0, Math.min(frame.height - maskState.height, ny));
+          cx = nx + maskState.width / 2;
+          cy = ny + maskState.height / 2;
+          return {
+            x: groupAbs.x + (cx - moveSize / 2) * s,
+            y: groupAbs.y + (cy - moveSize / 2) * s,
+          };
+        });
+        moveHandle.on('dragmove', () => {
+          const cx = moveHandle.x() + moveSize / 2;
+          const cy = moveHandle.y() + moveSize / 2;
+          maskState.x = Math.round(cx - maskState.width / 2);
+          maskState.y = Math.round(cy - maskState.height / 2);
+          maskBody.x(maskState.x);
+          maskBody.y(maskState.y);
+          repositionHandles();
+          refreshBgPosition();
+          layer.batchDraw();
+        });
+        moveHandle.on('dragend', () => {
+          dispatch('change', {
+            frame: { ...frame, background: { ...ref.bg, mask: { ...maskState } } },
+          });
+        });
+        group.add(moveHandle);
+        group.add(moveIcon);
+        moveHandleRef = moveHandle;
       }
     }
 

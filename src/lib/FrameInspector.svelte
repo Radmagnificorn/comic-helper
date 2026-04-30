@@ -16,6 +16,7 @@
   const dispatch = createEventDispatcher<{
     change: { frame: Frame };
     delete: { id: string };
+    duplicate: { id: string };
     move: { id: string; direction: 'up' | 'down' };
     adjustBackground: { id: string | null };
   }>();
@@ -40,14 +41,7 @@
     const clamped = Math.max(8, Math.min(1024, Math.round(h)));
     dispatch('change', { frame: { ...frame, height: clamped } });
   }
-  function setBgColor(c: string) {
-    if (!frame) return;
-    dispatch('change', { frame: { ...frame, bgColor: c } });
-  }
-  function setLabel(label: string) {
-    if (!frame) return;
-    dispatch('change', { frame: { ...frame, label } });
-  }
+
 
   // ── Background ────────────────────────────────────────────────
   function setBackgroundAsset(assetId: string) {
@@ -154,16 +148,6 @@
     <!-- ── Frame meta ───────────────────────────── -->
     <div class="section-header">Frame</div>
     <div class="row">
-      <label class="field grow">
-        <span class="field-label">Label</span>
-        <input
-          type="text"
-          value={frame.label}
-          on:change={e => setLabel((e.target as HTMLInputElement).value)}
-        />
-      </label>
-    </div>
-    <div class="row">
       <label class="field">
         <span class="field-label">Height</span>
         <input
@@ -172,24 +156,6 @@
           value={frame.height}
           on:change={e => setHeight(+(e.target as HTMLInputElement).value)}
         />
-      </label>
-      <label class="field grow">
-        <span class="field-label">Background color</span>
-        <div class="color-row">
-          <input
-            type="color"
-            value={frame.bgColor}
-            class="color-swatch"
-            on:input={e => setBgColor((e.target as HTMLInputElement).value)}
-          />
-          <input
-            type="text"
-            value={frame.bgColor}
-            maxlength="7"
-            class="color-hex"
-            on:change={e => setBgColor((e.target as HTMLInputElement).value)}
-          />
-        </div>
       </label>
     </div>
     <div class="row actions-row">
@@ -205,6 +171,11 @@
         on:click={() => frame && dispatch('move', { id: frame.id, direction: 'down' })}
         title="Move frame down"
       >▼ Down</button>
+      <button
+        class="btn"
+        on:click={() => frame && dispatch('duplicate', { id: frame.id })}
+        title="Duplicate frame"
+      >⧉ Duplicate</button>
       <button
         class="btn danger"
         on:click={() => frame && dispatch('delete', { id: frame.id })}

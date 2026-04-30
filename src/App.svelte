@@ -171,10 +171,8 @@
     const id = crypto.randomUUID();
     const f: Frame = {
       id,
-      label: `Frame ${frames.length + 1}`,
       width: currentProject.canvasWidth,
       height: 192,
-      bgColor: currentProject.bgColor,
       background: null,
       layers: [],
     };
@@ -195,6 +193,29 @@
     await saveProject(updated);
     setCurrentProject(updated);
     if (selectedFrameId === id) selectedFrameId = frames[0]?.id ?? null;
+  }
+
+  async function handleDuplicateFrame(e: CustomEvent<{ id: string }>) {
+    if (!currentProject) return;
+    const id = e.detail.id;
+    const idx = frames.findIndex(f => f.id === id);
+    if (idx < 0) return;
+    const src = frames[idx];
+    const dup: Frame = {
+      ...src,
+      id: crypto.randomUUID(),
+      background: src.background ? { ...src.background, mask: src.background.mask ? { ...src.background.mask } : null } : null,
+      layers: src.layers.map(l => ({ ...l, id: crypto.randomUUID() })),
+      bubbles: src.bubbles?.map(b => ({ ...b, id: crypto.randomUUID() })),
+    };
+    await saveFrame(dup);
+    const arr = [...frames];
+    arr.splice(idx + 1, 0, dup);
+    frames = arr;
+    const updated: Project = { ...currentProject, frameIds: arr.map(f => f.id), updatedAt: Date.now() };
+    await saveProject(updated);
+    setCurrentProject(updated);
+    selectedFrameId = dup.id;
   }
 
   async function handleMoveFrame(e: CustomEvent<{ id: string; direction: 'up' | 'down' }>) {
@@ -241,14 +262,6 @@
     const frame = frames.find(f => f.id === e.detail.id);
     if (!frame) return;
     const updated: Frame = { ...frame, height: e.detail.height };
-    await saveFrame(updated);
-    frames = frames.map(f => f.id === updated.id ? updated : f);
-  }
-
-  async function handleRecolorFrame(e: CustomEvent<{ id: string; bgColor: string }>) {
-    const frame = frames.find(f => f.id === e.detail.id);
-    if (!frame) return;
-    const updated: Frame = { ...frame, bgColor: e.detail.bgColor };
     await saveFrame(updated);
     frames = frames.map(f => f.id === updated.id ? updated : f);
   }
@@ -562,6 +575,7 @@
           {assets}
           {selectedFrameId}
           {bgAdjustFrameId}
+          projectBgColor={currentProject.bgColor}
           on:change={handleFrameChange}
           on:resize={handleResizeFrame}
           on:select={e => handleSelectFrame(e.detail.id)}
@@ -587,7 +601,7 @@
         <header class="drawer-header">
           <span class="drawer-title">
             {#if activeDrawer === 'inspector'}
-              Inspector{currentFrame ?  ' — ' + (currentFrame.label || 'Frame') : ''}
+              Inspector{currentFrame && currentFrameIndex >= 0 ? ` — Frame ${currentFrameIndex + 1}` : ''}
             {:else}
               Assets
             {/if}
@@ -605,6 +619,7 @@
               {bgAdjustFrameId}
               on:change={handleFrameChange}
               on:delete={handleDeleteFrame}
+              on:duplicate={handleDuplicateFrame}
               on:move={handleMoveFrame}
               on:adjustBackground={handleAdjustBackground}
             />

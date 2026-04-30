@@ -84,13 +84,10 @@ export interface SpeechBubble {
 
 export interface Frame {
   id: string;
-  label: string;
   /** Canvas width in pixels (low-res) — inherited from project */
   width: number;
   /** Frame height in pixels (low-res) — each frame can differ */
   height: number;
-  /** Solid fill shown behind background image */
-  bgColor: string;
   /** Optional background image + crop */
   background: FrameBackground | null;
   /** Character layers */
@@ -104,7 +101,7 @@ export interface Project {
   name: string;
   /** Low-res canvas width shared by all frames */
   canvasWidth: number;
-  /** Default background color for new frames */
+  /** Background color shown behind every frame */
   bgColor: string;
   frameIds: string[];
   /** Project-private asset ids (deleted when the project is deleted) */

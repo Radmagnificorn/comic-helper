@@ -35,6 +35,8 @@
   export let selectedFrameId: string | null = null;
   /** id of the frame whose background is currently being adjusted (drag/scale), or null */
   export let bgAdjustFrameId: string | null = null;
+  /** Solid fill behind every frame (project-level). */
+  export let projectBgColor: string = '#ffffff';
   /** How many screen pixels per canvas pixel before zoom */
   export let displayScale: number = 3;
   /** Vertical gap (in canvas px) between frames — re-exported for consumers. */
@@ -138,7 +140,7 @@
 
   // Re-render when frames or assets or adjust-mode changes
   $: if (layer) {
-    void frames; void assets; void selectedFrameId; void bgAdjustFrameId;
+    void frames; void assets; void selectedFrameId; void bgAdjustFrameId; void projectBgColor;
     applyStageSize();
     renderAll();
   }
@@ -166,7 +168,7 @@
       const inAdjustMode = frame.id === bgAdjustFrameId;
       const bgRect = new Konva.Rect({
         x: 0, y: 0, width: frame.width, height: frame.height,
-        fill: frame.bgColor || '#ffffff',
+        fill: projectBgColor || '#ffffff',
         listening: !inAdjustMode,
       });
       bgRect.on('click tap', () => dispatch('select', { id: frame.id }));

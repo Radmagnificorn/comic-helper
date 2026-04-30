@@ -16,6 +16,25 @@ export { naturalBase, clampBase, sideOfBase };
 /** CSS font-family name registered via FontFace at startup. */
 export const BUBBLE_FONT = 'PixelMplus10';
 
+function parseHexColor(hex: string): { r: number; g: number; b: number } {
+  const s = hex.trim().replace(/^#/, '');
+  if (s.length === 3) {
+    return {
+      r: parseInt(s[0] + s[0], 16),
+      g: parseInt(s[1] + s[1], 16),
+      b: parseInt(s[2] + s[2], 16),
+    };
+  }
+  if (s.length === 6) {
+    return {
+      r: parseInt(s.slice(0, 2), 16),
+      g: parseInt(s.slice(2, 4), 16),
+      b: parseInt(s.slice(4, 6), 16),
+    };
+  }
+  return { r: 0, g: 0, b: 0 };
+}
+
 // Singleton promise so we only load the font once per page lifetime.
 let fontPromise: Promise<void> | null = null;
 
@@ -49,6 +68,8 @@ export interface BubbleRenderParams {
   base: { side: BubbleSide; bx: number; by: number } | null;
   /** Render the tail as a flat-ended parallelogram instead of a point. */
   flatTip?: boolean;
+  /** Color for the bubble text. Defaults to '#000000'. */
+  fontColor?: string;
 }
 
 /**
@@ -90,7 +111,8 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
   offX: number;
   offY: number;
 } {
-  const { bubble, bgW, bgH, lines, tip, base, flatTip } = params;
+  const { bubble, bgW, bgH, lines, tip, base, flatTip, fontColor } = params;
+  const textColor = fontColor ?? '#000000';
 
   // Size the offscreen canvas to contain both the rect and the tail tip.
   const minX = Math.floor(Math.min(0, tip.x));
@@ -130,7 +152,7 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
 
   // Draw text on top (after threshold so it keeps normal anti-aliasing).
   const lineHeight = bubble.fontSize;
-  ctx.fillStyle = '#000000';
+  ctx.fillStyle = textColor;
   ctx.font = `${bubble.fontSize}px "${BUBBLE_FONT}"`;
   ctx.textBaseline = 'top';
   for (let i = 0; i < lines.length; i++) {
@@ -138,22 +160,23 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
   }
 
   // Threshold the text pixels too so sub-pixel anti-aliasing (which shows
-  // up as a faint grey halo / ghosting around glyphs) is collapsed away.
+  // up as a faint halo / ghosting around glyphs) is collapsed away.
   // We're conservative here: only pixels that are clearly part of a glyph
-  // (very dark) become solid black; mid-grey AA pixels are pushed to pure
-  // white so they vanish into the bubble background. This avoids fattening
-  // the glyphs.
+  // (significantly different from the white bubble background) become solid
+  // textColor; mid-tone AA pixels are pushed to pure white so they vanish
+  // into the bubble background. This avoids fattening the glyphs.
+  const tc = parseHexColor(textColor);
   const textImg = ctx.getImageData(0, 0, c.width, c.height);
   const td = textImg.data;
   for (let i = 0; i < td.length; i += 4) {
     if (td[i + 3] === 0) continue;
     const r = td[i], g = td[i + 1], b = td[i + 2];
-    const lum = (r + g + b) / 3;
-    if (lum < 96) {
-      // Strong glyph pixel — keep as pure black.
-      td[i] = 0; td[i + 1] = 0; td[i + 2] = 0; td[i + 3] = 255;
+    // Distance from pure white. Glyph centers are close to textColor so
+    // their channels are far from 255; AA halo pixels are close to 255.
+    const dist = (255 - r) + (255 - g) + (255 - b);
+    if (dist > 360) {
+      td[i] = tc.r; td[i + 1] = tc.g; td[i + 2] = tc.b; td[i + 3] = 255;
     } else {
-      // AA halo or background — collapse to pure white.
       td[i] = 255; td[i + 1] = 255; td[i + 2] = 255; td[i + 3] = 255;
     }
   }

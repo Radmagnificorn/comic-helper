@@ -630,6 +630,28 @@
     a.click();
   }
 
+  // ── Project settings popover ───────────────────────────────────
+  let settingsOpen = false;
+  function toggleSettings() { settingsOpen = !settingsOpen; }
+  function closeSettings() { settingsOpen = false; }
+  async function updateProjectSettings(patch: Partial<Project>) {
+    if (!currentProject) return;
+    const updated: Project = { ...currentProject, ...patch, updatedAt: Date.now() };
+    await saveProject(updated);
+    setCurrentProject(updated);
+  }
+  function onBgColorChange(e: Event) {
+    updateProjectSettings({ bgColor: (e.target as HTMLInputElement).value });
+  }
+  function onFontColorChange(e: Event) {
+    updateProjectSettings({ fontColor: (e.target as HTMLInputElement).value });
+  }
+  function onProjectNameChange(e: Event) {
+    const name = (e.target as HTMLInputElement).value.trim();
+    if (!name) return;
+    updateProjectSettings({ name });
+  }
+
   // ── Topbar quick actions ───────────────────────────────────────
   // Background assets are only ever set as a frame's background (via the
   // FrameInspector), never added as scene layers, so the quick-add only
@@ -724,6 +746,7 @@
     <header class="topbar">
       <button class="back-btn" on:click={closeProject} title="Projects">←</button>
       <span class="project-title">{currentProject.name}</span>
+      <button class="back-btn" on:click={toggleSettings} title="Project settings" aria-label="Project settings">⚙</button>
       <button class="add-btn" on:click={addFrame} title="Add frame">+ Frame</button>
       {#if !desktopMode}<span class="qa-divider"></span>{/if}
       <div class="qa-group" class:qa-group-centered={desktopMode}>
@@ -775,6 +798,29 @@
       <button class="export-btn" on:click={exportComic} disabled={frames.length === 0}>Export</button>
     </header>
 
+    {#if settingsOpen}
+      <div class="settings-backdrop" on:click={closeSettings} on:keydown={e => e.key === 'Escape' && closeSettings()} role="button" tabindex="-1" aria-label="Close settings"></div>
+      <div class="settings-popover" role="dialog" aria-label="Project settings">
+        <div class="settings-row">
+          <label for="proj-name">Name</label>
+          <input id="proj-name" type="text" value={currentProject.name} on:change={onProjectNameChange} />
+        </div>
+        <div class="settings-row">
+          <label for="proj-bg">Background</label>
+          <input id="proj-bg" type="color" value={currentProject.bgColor} on:input={onBgColorChange} />
+          <input type="text" value={currentProject.bgColor} on:change={onBgColorChange} class="color-text" maxlength="7" />
+        </div>
+        <div class="settings-row">
+          <label for="proj-fg">Font color</label>
+          <input id="proj-fg" type="color" value={currentProject.fontColor ?? '#000000'} on:input={onFontColorChange} />
+          <input type="text" value={currentProject.fontColor ?? '#000000'} on:change={onFontColorChange} class="color-text" maxlength="7" />
+        </div>
+        <div class="settings-actions">
+          <button on:click={closeSettings}>Done</button>
+        </div>
+      </div>
+    {/if}
+
     <div class="work-area">
       {#if desktopMode}
         <aside class="side-dock side-dock-left">
@@ -812,6 +858,7 @@
             {selectedFrameId}
             {bgAdjustFrameId}
             projectBgColor={currentProject.bgColor}
+            projectFontColor={currentProject.fontColor ?? '#000000'}
             on:change={handleFrameChange}
             on:resize={handleResizeFrame}
             on:select={e => handleSelectFrame(e.detail.id)}
@@ -1050,6 +1097,35 @@
   .export-scale { font-size: 0.78rem; padding: 3px 6px; }
   .export-btn { background: #1e4a2e; border-color: #3a8a5a; color: #aef0c0; }
   .export-btn:hover:not(:disabled) { background: #2a6a3e; border-color: #5ab87a; }
+
+  /* Project settings popover */
+  .settings-backdrop {
+    position: fixed; inset: 0;
+    background: transparent;
+    z-index: 199;
+  }
+  .settings-popover {
+    position: absolute;
+    top: 48px; left: 50%;
+    transform: translateX(-50%);
+    z-index: 200;
+    background: #1e1e30;
+    border: 1px solid #4a4a6a;
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    padding: 12px;
+    min-width: 260px;
+    display: flex; flex-direction: column; gap: 10px;
+    color: #e0e0f0;
+  }
+  .settings-row { display: flex; align-items: center; gap: 8px; }
+  .settings-row label { flex: 0 0 90px; font-size: 0.8rem; color: #b0b0d0; }
+  .settings-row input[type="text"] { flex: 1; min-width: 0; background: #16162a; color: #e0e0f0; border: 1px solid #4a4a6a; border-radius: 3px; padding: 3px 6px; font-size: 0.8rem; }
+  .settings-row input[type="color"] { width: 32px; height: 28px; padding: 0; border: 1px solid #4a4a6a; border-radius: 3px; background: #16162a; }
+  .settings-row .color-text { max-width: 86px; font-family: monospace; }
+  .settings-actions { display: flex; justify-content: flex-end; }
+  .settings-actions button { background: #2a2a4a; color: #e0e0f0; border: 1px solid #5a5a7a; border-radius: 3px; padding: 4px 12px; cursor: pointer; }
+  .settings-actions button:hover { background: #3a3a5a; }
 
   /* Bottom drawer */
   .drawer { flex-shrink: 0; min-height: 120px; display: flex; flex-direction: column;

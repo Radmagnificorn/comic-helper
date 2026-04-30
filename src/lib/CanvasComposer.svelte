@@ -37,6 +37,7 @@
   export let bgAdjustFrameId: string | null = null;
   /** Solid fill behind every frame (project-level). */
   export let projectBgColor: string = '#ffffff';
+  export let projectFontColor: string = '#000000';
   /** How many screen pixels per canvas pixel before zoom */
   export let displayScale: number = 3;
   /** Vertical gap (in canvas px) between frames — re-exported for consumers. */
@@ -142,7 +143,7 @@
   // changes are applied incrementally below so they don't tear down nodes
   // mid-interaction (which would kill an in-flight drag).
   $: if (layer) {
-    void frames; void assets; void bgAdjustFrameId; void projectBgColor;
+    void frames; void assets; void bgAdjustFrameId; void projectBgColor; void projectFontColor;
     applyStageSize();
     renderAll();
   }
@@ -737,7 +738,7 @@
       frame, bubble.id, bubble.x + tip.x, bubble.y + tip.y,
     );
 
-    let built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo });
+    let built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor });
     const kImg = new Konva.Image({
       image: built.canvas,
       x: built.offX,
@@ -829,7 +830,7 @@
       connectedTo = findConnectedBubbleId(
         frame, bubble.id, bGroup.x() + tip.x, bGroup.y() + tip.y,
       );
-      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo });
+      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor });
       kImg.image(built.canvas);
       kImg.position({ x: built.offX, y: built.offY });
       kImg.size({ width: built.canvas.width, height: built.canvas.height });

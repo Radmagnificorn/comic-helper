@@ -109,6 +109,8 @@ export interface Project {
   canvasWidth: number;
   /** Background color shown behind every frame */
   bgColor: string;
+  /** Color used for speech bubble text. Defaults to '#000000' if absent. */
+  fontColor?: string;
   frameIds: string[];
   /** Project-private asset ids (deleted when the project is deleted) */
   assetIds: string[];

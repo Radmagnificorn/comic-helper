@@ -113,8 +113,13 @@ This is the largest and most complex file (~1000 lines). Key facts:
   that mode, dragging pans the background image inside its mask rect.
 - Maintains `urlCache` / `imageCache` keyed by image id to avoid leaking
   `URL.createObjectURL` results — clean these up if you add new image flows.
-- `exportPng()` is the public method called by `App.exportComic()`; it
-  re-renders the stacked frames at native resolution into a data URL.
+- `exportPng(scale?)` is the public method called by `App.exportComic()`; it
+  re-renders the stacked frames at native (1x) resolution into a data URL,
+  optionally upscaled by an integer `scale` (UI exposes 1x / 4x / 8x) using
+  nearest-neighbor sampling via Konva's `pixelRatio`. UI overlay nodes
+  (selection outline, frame resize handle, background mask + handles, speech
+  bubble tail handles) are tagged with the `UI_NODE_NAME` Konva name and
+  hidden during export so they don't appear in the PNG.
 - The bundled pixel font is loaded via the `BUBBLE_FONT` constant; rely on it
   rather than hardcoding font names elsewhere.
 
@@ -131,7 +136,9 @@ This is the largest and most complex file (~1000 lines). Key facts:
   are placed as `FrameLayer`s with `x/y` and optional `flippedX`.
 - **Speech bubbles**: per-frame `SpeechBubble[]` rendered on top of layers,
   using the bundled pixel font, with a draggable tail tip.
-- **Export**: stacked PNG of all frames at native resolution.
+- **Export**: stacked PNG of all frames at native (1x) resolution; optional
+  4x / 8x nearest-neighbor upscale chosen from a select next to the Export
+  button. UI overlay elements (handles, selection outline) are excluded.
 - **PWA**: installable, offline-capable via `vite-plugin-pwa` autoUpdate.
 
 ## Conventions

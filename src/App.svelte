@@ -195,12 +195,15 @@
   }
 
   // ── Export ─────────────────────────────────────────────────────
+  /** PNG export scale: 1 = native, 4 / 8 = nearest-neighbor upscale */
+  let exportScale: 1 | 4 | 8 = 1;
   function exportComic() {
     if (!composerRef) return;
-    const dataUrl = composerRef.exportPng();
+    const dataUrl = composerRef.exportPng(exportScale);
     const a = document.createElement('a');
     a.href = dataUrl;
-    a.download = `${currentProject?.name ?? 'comic'}.png`;
+    const suffix = exportScale > 1 ? `@${exportScale}x` : '';
+    a.download = `${currentProject?.name ?? 'comic'}${suffix}.png`;
     a.click();
   }
 </script>
@@ -218,6 +221,16 @@
       <button class="back-btn" on:click={closeProject} title="Projects">←</button>
       <span class="project-title">{currentProject.name}</span>
       <button class="add-btn" on:click={addFrame} title="Add frame">+ Frame</button>
+      <select
+        class="export-scale"
+        bind:value={exportScale}
+        title="Export scale (nearest-neighbor for 4x / 8x)"
+        disabled={frames.length === 0}
+      >
+        <option value={1}>1x</option>
+        <option value={4}>4x</option>
+        <option value={8}>8x</option>
+      </select>
       <button class="export-btn" on:click={exportComic} disabled={frames.length === 0}>Export</button>
     </header>
 
@@ -323,6 +336,7 @@
   .project-title { flex: 1; font-weight: 600; color: #e0e0f0; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .add-btn { background: #22223a; border-color: #4a4a6a; color: #c0c0e0; font-size: 0.78rem; }
   .add-btn:hover:not(:disabled) { background: #35356a; border-color: #7070cc; color: #fff; }
+  .export-scale { font-size: 0.78rem; padding: 3px 6px; }
   .export-btn { background: #1e4a2e; border-color: #3a8a5a; color: #aef0c0; }
   .export-btn:hover:not(:disabled) { background: #2a6a3e; border-color: #5ab87a; }
 

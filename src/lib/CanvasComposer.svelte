@@ -30,6 +30,14 @@
   export let displayScale: number = 3;
   /** Vertical gap (in canvas px) between frames */
   export const frameGap: number = 6;
+  /**
+   * Extra display-only space (in canvas px) added at the bottom of the stage
+   * so the last frame's resize handle is still hit-testable when there's no
+   * frame below it. Not included in exports.
+   */
+  const STAGE_BOTTOM_PADDING = 8;
+  /** Konva `name` tag applied to all overlay/UI nodes that must be hidden during export. */
+  const UI_NODE_NAME = 'ui-overlay';
 
   const dispatch = createEventDispatcher<{
     change: { frame: Frame };
@@ -93,7 +101,9 @@
   function applyStageSize() {
     if (!stage) return;
     const w = canvasWidth() * displayScale * zoom;
-    const h = totalCanvasHeight() * displayScale * zoom;
+    // Add bottom padding so the last frame's resize handle stays inside the
+    // stage canvas (and therefore remains draggable).
+    const h = (totalCanvasHeight() + STAGE_BOTTOM_PADDING) * displayScale * zoom;
     stage.width(Math.max(w, 1));
     stage.height(Math.max(h, 1));
     stage.scale({ x: displayScale * zoom, y: displayScale * zoom });
@@ -113,7 +123,7 @@
 
   onMount(() => {
     stage = new Konva.Stage({ container, width: 1, height: 1 });
-    layer = new Konva.Layer();
+    layer = new Konva.Layer({ imageSmoothingEnabled: false });
     stage.add(layer);
     fitZoom();
     applyStageSize();
@@ -299,6 +309,7 @@
           stroke: '#7070ff', strokeWidth: 1 / (displayScale * zoom),
           dash: [3 / (displayScale * zoom), 2 / (displayScale * zoom)],
           listening: false,
+          name: UI_NODE_NAME,
         });
         group.add(outline);
       }
@@ -312,6 +323,7 @@
         opacity: 0.85,
         draggable: true,
         listening: true,
+        name: UI_NODE_NAME,
         // cursor handled below
       });
       // Lock X axis: only Y movement matters for resize
@@ -344,7 +356,7 @@
         }
         // Resize stage if growing
         const newTotal = totalCanvasHeight() + delta;
-        stage.height(newTotal * displayScale * zoom);
+        stage.height((newTotal + STAGE_BOTTOM_PADDING) * displayScale * zoom);
         layer.batchDraw();
       });
       handle.on('dragend', () => {
@@ -370,6 +382,7 @@
           strokeWidth: 1.5 / (displayScale * zoom),
           fill: 'rgba(240,160,64,0.05)',
           listening: false,
+          name: UI_NODE_NAME,
         });
         group.add(maskBody);
         type HandlePos = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
@@ -424,6 +437,7 @@
             strokeWidth: 0.5,
             draggable: true,
             listening: true,
+            name: UI_NODE_NAME,
           });
           handleNodes[p] = h;
 
@@ -663,6 +677,7 @@
       strokeWidth: 1,
       draggable: frame.id !== bgAdjustFrameId,
       listening: frame.id !== bgAdjustFrameId,
+      name: UI_NODE_NAME,
       // Make handle scale-independent so it stays a constant screen size.
     });
     tipHandle.dragBoundFunc((pos) => {
@@ -956,22 +971,47 @@
     dispatch('change', { frame: { ...f, background: null } });
   }
 
-  /** Export the entire stacked comic at native resolution (no zoom) */
-  export function exportPng(): string {
+  /**
+   * Export the entire stacked comic as a PNG data URL.
+   *
+   * The comic is always composed at native (1x) resolution. When `scale` > 1,
+   * the resulting image is upscaled with nearest-neighbor sampling (via
+   * Konva's `pixelRatio`, combined with `imageSmoothingEnabled: false` on every
+   * raster node) so pixel art stays crisp.
+   *
+   * UI overlay elements (selection outline, frame resize handle, background
+   * mask + handles, speech-bubble tail handles) are hidden during export.
+   */
+  export function exportPng(scale: number = 1): string {
     if (!stage) return '';
+    const safeScale = Math.max(1, Math.floor(scale) || 1);
+
+    // Hide all UI overlay nodes for the duration of the export.
+    const uiNodes = stage.find(`.${UI_NODE_NAME}`);
+    for (const n of uiNodes) n.hide();
+
     const oldScale = { x: stage.scaleX(), y: stage.scaleY() };
     const oldW = stage.width();
     const oldH = stage.height();
-    // Render at displayScale only (no zoom) for clean native-res export
-    stage.scale({ x: displayScale, y: displayScale });
-    stage.width(canvasWidth() * displayScale);
-    stage.height(totalCanvasHeight() * displayScale);
+
+    // Render at native resolution (no displayScale, no zoom, no bottom padding)
+    // so the exported PNG is exactly canvasWidth × totalCanvasHeight pixels at
+    // 1x. Higher scales are achieved via pixelRatio (nearest-neighbor).
+    stage.scale({ x: 1, y: 1 });
+    stage.width(canvasWidth());
+    stage.height(totalCanvasHeight());
     layer.batchDraw();
-    const url = stage.toDataURL({ pixelRatio: 1 });
-    stage.scale(oldScale);
-    stage.width(oldW);
-    stage.height(oldH);
-    layer.batchDraw();
+
+    let url = '';
+    try {
+      url = stage.toDataURL({ pixelRatio: safeScale });
+    } finally {
+      stage.scale(oldScale);
+      stage.width(oldW);
+      stage.height(oldH);
+      for (const n of uiNodes) n.show();
+      layer.batchDraw();
+    }
     return url;
   }
 
@@ -1026,7 +1066,7 @@
   .viewport { flex: 1; overflow: auto; background: #0a0a14; touch-action: pan-x pan-y; position: relative; }
   .stage-pad { padding: 24px; display: inline-block; min-width: 100%; box-sizing: border-box; }
   .stage-host { display: inline-block; box-shadow: 0 0 0 1px #2a2a40, 0 8px 32px rgba(0,0,0,0.4); touch-action: none; }
-  .stage-host :global(canvas) { image-rendering: pixelated; image-rendering: crisp-edges; }
+  .stage-host :global(canvas) { image-rendering: crisp-edges; image-rendering: pixelated; }
 
   .ctx-backdrop {
     position: fixed; inset: 0;

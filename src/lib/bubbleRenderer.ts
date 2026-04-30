@@ -103,7 +103,7 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
   const c = document.createElement('canvas');
   c.width = cw;
   c.height = ch;
-  const ctx = c.getContext('2d')!;
+  const ctx = c.getContext('2d', { willReadFrequently: true })!;
   ctx.imageSmoothingEnabled = false;
   ctx.translate(-minX, -minY);
 
@@ -136,6 +136,28 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
   for (let i = 0; i < lines.length; i++) {
     ctx.fillText(lines[i], BUBBLE_PAD, BUBBLE_PAD + i * lineHeight);
   }
+
+  // Threshold the text pixels too so sub-pixel anti-aliasing (which shows
+  // up as a faint grey halo / ghosting around glyphs) is collapsed away.
+  // We're conservative here: only pixels that are clearly part of a glyph
+  // (very dark) become solid black; mid-grey AA pixels are pushed to pure
+  // white so they vanish into the bubble background. This avoids fattening
+  // the glyphs.
+  const textImg = ctx.getImageData(0, 0, c.width, c.height);
+  const td = textImg.data;
+  for (let i = 0; i < td.length; i += 4) {
+    if (td[i + 3] === 0) continue;
+    const r = td[i], g = td[i + 1], b = td[i + 2];
+    const lum = (r + g + b) / 3;
+    if (lum < 96) {
+      // Strong glyph pixel — keep as pure black.
+      td[i] = 0; td[i + 1] = 0; td[i + 2] = 0; td[i + 3] = 255;
+    } else {
+      // AA halo or background — collapse to pure white.
+      td[i] = 255; td[i + 1] = 255; td[i + 2] = 255; td[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(textImg, 0, 0);
 
   return { canvas: c, offX: minX, offY: minY };
 }

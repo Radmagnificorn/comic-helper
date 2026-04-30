@@ -31,12 +31,24 @@
   /** id of the frame whose background is currently being adjusted */
   let bgAdjustFrameId: string | null = null;
 
-  // Bottom drawer — only one panel visible at a time
+  // Bottom drawer — only one panel visible at a time (mobile/narrow only)
   type DrawerTab = 'inspector' | 'assets' | null;
   let activeDrawer: DrawerTab = null;
   function toggleDrawer(t: Exclude<DrawerTab, null>) {
     activeDrawer = activeDrawer === t ? null : t;
   }
+
+  // ── Desktop dock ───────────────────────────────────────────
+  // On wide viewports, both Inspector and Assets are docked to the right of
+  // the canvas as fixed-width panels, so the user can edit a frame without
+  // having to swap between drawers. On narrow screens we fall back to the
+  // mobile bottom-drawer layout above.
+  const DESKTOP_BREAKPOINT = 1100;
+  let viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1024;
+  function onWindowResize() {
+    viewportWidth = window.innerWidth;
+  }
+  $: desktopMode = viewportWidth >= DESKTOP_BREAKPOINT;
 
   // ── Drawer height (user-resizable, persisted) ──────────────────
   const DRAWER_MIN = 120;
@@ -85,10 +97,11 @@
   $: currentFrame = frames.find(f => f.id === selectedFrameId) ?? null;
   $: currentFrameIndex = currentFrame ? frames.findIndex(f => f.id === currentFrame.id) : -1;
 
-  // Auto-open the inspector when a frame becomes selected
+  // Auto-open the inspector when a frame becomes selected (mobile only;
+  // on desktop both panels are always visible).
   function handleSelectFrame(id: string) {
     selectedFrameId = id;
-    if (activeDrawer === null) activeDrawer = 'inspector';
+    if (!desktopMode && activeDrawer === null) activeDrawer = 'inspector';
     // Selecting a different frame exits adjust mode
     if (bgAdjustFrameId && bgAdjustFrameId !== id) bgAdjustFrameId = null;
   }
@@ -99,7 +112,7 @@
 
   function handleEditBubble(frameId: string, bubbleId: string) {
     selectedFrameId = frameId;
-    activeDrawer = 'inspector';
+    if (!desktopMode) activeDrawer = 'inspector';
     // Wait for the inspector to mount/update before focusing.
     requestAnimationFrame(() => inspectorRef?.focusBubble(bubbleId));
   }
@@ -656,7 +669,7 @@
   }
 </script>
 
-<svelte:window on:keydown={onWindowKeydown} />
+<svelte:window on:keydown={onWindowKeydown} on:resize={onWindowResize} />
 
 {#if !currentProject}
   <ProjectScreen
@@ -671,7 +684,8 @@
       <button class="back-btn" on:click={closeProject} title="Projects">←</button>
       <span class="project-title">{currentProject.name}</span>
       <button class="add-btn" on:click={addFrame} title="Add frame">+ Frame</button>
-      <span class="qa-divider"></span>
+      {#if !desktopMode}<span class="qa-divider"></span>{/if}
+      <div class="qa-group" class:qa-group-centered={desktopMode}>
       <button
         class="qa-btn"
         class:active={bgAdjustFrameId !== null && bgAdjustFrameId === selectedFrameId}
@@ -705,7 +719,8 @@
         disabled={!currentFrame}
         title="Add speech bubble to selected frame"
       >…</button>
-      <span class="qa-divider"></span>
+      </div>
+      {#if !desktopMode}<span class="qa-divider"></span>{/if}
       <select
         class="export-scale"
         bind:value={exportScale}
@@ -719,29 +734,82 @@
       <button class="export-btn" on:click={exportComic} disabled={frames.length === 0}>Export</button>
     </header>
 
-    <main class="canvas-area">
-      {#if frames.length > 0}
-        <CanvasComposer
-          bind:this={composerRef}
-          {frames}
-          {assets}
-          {selectedFrameId}
-          {bgAdjustFrameId}
-          projectBgColor={currentProject.bgColor}
-          on:change={handleFrameChange}
-          on:resize={handleResizeFrame}
-          on:select={e => handleSelectFrame(e.detail.id)}
-          on:editbubble={e => handleEditBubble(e.detail.frameId, e.detail.bubbleId)}
-        />
-      {:else}
-        <div class="no-frame">
-          <p>No frames yet.</p>
-          <button on:click={addFrame}>+ Add first frame</button>
-        </div>
+    <div class="work-area">
+      {#if desktopMode}
+        <aside class="side-dock side-dock-left">
+          <section class="dock-panel">
+            <header class="dock-header">Assets</header>
+            <div class="dock-body">
+              <AssetPanel
+                {projectAssets}
+                attachedLibraries={(currentProject.libraryIds ?? [])
+                  .map(id => libraries.find(l => l.id === id))
+                  .filter((l): l is AssetLibrary => !!l)}
+                {libraryAssets}
+                availableLibraries={libraries.filter(l => !(currentProject?.libraryIds ?? []).includes(l.id))}
+                on:createAsset={handleCreateAsset}
+                on:uploadImages={handleUploadImages}
+                on:deleteImage={handleDeleteImage}
+                on:deleteAsset={handleDeleteAsset}
+                on:createLibrary={handleCreateLibrary}
+                on:attachLibrary={handleAttachLibrary}
+                on:detachLibrary={handleDetachLibrary}
+                on:deleteLibrary={handleDeleteLibrary}
+              />
+            </div>
+          </section>
+        </aside>
       {/if}
-    </main>
 
-    {#if activeDrawer}
+      <main class="canvas-area">
+        {#if frames.length > 0}
+          <CanvasComposer
+            bind:this={composerRef}
+            {frames}
+            {assets}
+            {selectedFrameId}
+            {bgAdjustFrameId}
+            projectBgColor={currentProject.bgColor}
+            on:change={handleFrameChange}
+            on:resize={handleResizeFrame}
+            on:select={e => handleSelectFrame(e.detail.id)}
+            on:editbubble={e => handleEditBubble(e.detail.frameId, e.detail.bubbleId)}
+          />
+        {:else}
+          <div class="no-frame">
+            <p>No frames yet.</p>
+            <button on:click={addFrame}>+ Add first frame</button>
+          </div>
+        {/if}
+      </main>
+
+      {#if desktopMode}
+        <aside class="side-dock side-dock-right">
+          <section class="dock-panel">
+            <header class="dock-header">
+              Inspector{currentFrame && currentFrameIndex >= 0 ? ` — Frame ${currentFrameIndex + 1}` : ''}
+            </header>
+            <div class="dock-body">
+              <FrameInspector
+                bind:this={inspectorRef}
+                frame={currentFrame}
+                {assets}
+                frameIndex={currentFrameIndex}
+                frameCount={frames.length}
+                {bgAdjustFrameId}
+                on:change={handleFrameChange}
+                on:delete={handleDeleteFrame}
+                on:duplicate={handleDuplicateFrame}
+                on:move={handleMoveFrame}
+                on:adjustBackground={handleAdjustBackground}
+              />
+            </div>
+          </section>
+        </aside>
+      {/if}
+    </div>
+
+    {#if !desktopMode && activeDrawer}
       <section class="drawer" style="height: {drawerHeight}px;">
         <div
           class="drawer-grip"
@@ -810,12 +878,14 @@
         disabled={!canRedo}
         title="Redo (Ctrl+Shift+Z)"
       ><span class="tab-icon">↷</span><span class="tab-label">Redo</span></button>
-      <button class="tab" class:active={activeDrawer === 'inspector'} on:click={() => toggleDrawer('inspector')}>
-        <span class="tab-icon">✎</span><span class="tab-label">Frame</span>
-      </button>
-      <button class="tab" class:active={activeDrawer === 'assets'} on:click={() => toggleDrawer('assets')}>
-        <span class="tab-icon">▣</span><span class="tab-label">Assets</span>
-      </button>
+      {#if !desktopMode}
+        <button class="tab" class:active={activeDrawer === 'inspector'} on:click={() => toggleDrawer('inspector')}>
+          <span class="tab-icon">✎</span><span class="tab-label">Frame</span>
+        </button>
+        <button class="tab" class:active={activeDrawer === 'assets'} on:click={() => toggleDrawer('assets')}>
+          <span class="tab-icon">▣</span><span class="tab-label">Assets</span>
+        </button>
+      {/if}
     </nav>
   </div>
 {/if}
@@ -847,7 +917,47 @@
   :global(button:disabled) { opacity: 0.4; cursor: default; }
 
   .app-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-  .topbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #1a1a2e; border-bottom: 1px solid #333; flex-shrink: 0; }
+  .topbar { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #1a1a2e; border-bottom: 1px solid #333; flex-shrink: 0; }
+
+  /* Work area: canvas on the left, optional desktop dock on the right. */
+  .work-area { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+  .canvas-area {
+    flex: 1;
+    min-width: 0; min-height: 0;
+    overflow: hidden;
+    background: #0f0f1e;
+    display: flex;
+    flex-direction: column;
+  }
+  .side-dock {
+    width: 320px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    background: #16162a;
+    overflow: hidden;
+  }
+  .side-dock-left { border-right: 1px solid #2a2a40; }
+  .side-dock-right { border-left: 1px solid #2a2a40; }
+  .dock-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: 0;
+    border-bottom: 1px solid #2a2a40;
+    overflow: hidden;
+  }
+  .dock-panel:last-child { border-bottom: none; }
+  .dock-header {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #c0c0e0;
+    background: #1a1a2e;
+    border-bottom: 1px solid #2a2a40;
+    flex-shrink: 0;
+  }
+  .dock-body { flex: 1; overflow-y: auto; }
   .back-btn { background: none; border: none; color: #aaa; font-size: 1.1rem; padding: 4px 8px; }
   .back-btn:hover { color: #fff; background: none; border-color: transparent; }
   .project-title { flex: 1; font-weight: 600; color: #e0e0f0; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -875,11 +985,22 @@
   }
   .qa-select.qa-select-icon::-ms-expand { display: none; }
   .qa-divider { width: 1px; align-self: stretch; background: #2a2a40; margin: 2px 2px; }
+  .qa-group { display: flex; align-items: center; gap: 8px; }
+  /* On desktop, absolutely-center the quick-action cluster within the topbar
+     so it sits between the title and the export controls regardless of how
+     wide either side is. */
+  .qa-group-centered {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    background: #1a1a2e;
+    padding: 0 8px;
+    z-index: 1;
+  }
   .export-scale { font-size: 0.78rem; padding: 3px 6px; }
   .export-btn { background: #1e4a2e; border-color: #3a8a5a; color: #aef0c0; }
   .export-btn:hover:not(:disabled) { background: #2a6a3e; border-color: #5ab87a; }
-
-  .canvas-area { flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: #0f0f1e; display: flex; flex-direction: column; }
 
   /* Bottom drawer */
   .drawer { flex-shrink: 0; min-height: 120px; display: flex; flex-direction: column;

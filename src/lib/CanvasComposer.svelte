@@ -1074,7 +1074,18 @@
   .zoom-label { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; color: #a0a0c0; }
   .zoom-hint { margin-left: auto; color: #6a6a8a; font-size: 0.72rem; }
   .viewport { flex: 1; overflow: auto; background: #0a0a14; touch-action: pan-x pan-y; position: relative; }
-  .stage-pad { padding: 24px; display: inline-block; min-width: 100%; box-sizing: border-box; }
+  .stage-pad {
+    padding: 24px;
+    box-sizing: border-box;
+    /* Center the stage horizontally inside the scrollable viewport while
+       still letting it overflow naturally when zoomed past viewport width. */
+    min-width: 100%;
+    min-height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    width: max-content;
+  }
   .stage-host { display: inline-block; box-shadow: 0 0 0 1px #2a2a40, 0 8px 32px rgba(0,0,0,0.4); touch-action: none; }
   .stage-host :global(canvas) { image-rendering: crisp-edges; image-rendering: pixelated; }
 

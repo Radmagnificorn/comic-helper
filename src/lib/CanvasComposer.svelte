@@ -17,9 +17,18 @@
   import type { Frame, Asset, FrameLayer, FrameBackground, SpeechBubble } from '../types';
   import ImagePicker from './ImagePicker.svelte';
   import pixelMplus10Url from '../assets/fonts/PixelMplus10-Regular.ttf';
-
-  /** Font family used by speech bubbles. Loaded from a bundled .ttf at startup. */
-  const BUBBLE_FONT = 'PixelMplus10';
+  import {
+    FRAME_GAP, STAGE_BOTTOM_PADDING, UI_NODE_NAME,
+    canvasWidth as _canvasWidth,
+    totalCanvasHeight as _totalCanvasHeight,
+    frameOffsetY as _frameOffsetY,
+  } from './canvasLayout';
+  import {
+    BUBBLE_FONT, loadBubbleFont, measureBubble, buildBubbleCanvas,
+    naturalBase, clampBase, sideOfBase, updateBaseForTip,
+    BUBBLE_PAD, BUBBLE_RADIUS, TAIL_HANDLE_R, TAIL_LEAD,
+  } from './bubbleRenderer';
+  import type { BubbleSide } from './bubbleRenderer';
 
   export let frames: Frame[] = [];
   export let assets: Asset[] = [];
@@ -28,16 +37,12 @@
   export let bgAdjustFrameId: string | null = null;
   /** How many screen pixels per canvas pixel before zoom */
   export let displayScale: number = 3;
-  /** Vertical gap (in canvas px) between frames */
-  export const frameGap: number = 6;
-  /**
-   * Extra display-only space (in canvas px) added at the bottom of the stage
-   * so the last frame's resize handle is still hit-testable when there's no
-   * frame below it. Not included in exports.
-   */
-  const STAGE_BOTTOM_PADDING = 8;
-  /** Konva `name` tag applied to all overlay/UI nodes that must be hidden during export. */
-  const UI_NODE_NAME = 'ui-overlay';
+  /** Vertical gap (in canvas px) between frames — re-exported for consumers. */
+  export const frameGap: number = FRAME_GAP;
+
+  // Keep STAGE_BOTTOM_PADDING and UI_NODE_NAME as local aliases.
+  // Layout helpers delegate to the canvasLayout module so we always have
+  // consistent geometry without duplicating the logic.
 
   const dispatch = createEventDispatcher<{
     change: { frame: Frame };
@@ -80,22 +85,11 @@
   function getAsset(id: string) { return assets.find(a => a.id === id); }
   function getImageMeta(asset: Asset, imageId: string) { return asset.images.find(i => i.id === imageId); }
 
-  // ── Layout calculation ───────────────────────────────────────
-  /** Total stage height in canvas pixels (incl. inter-frame gaps) */
-  function totalCanvasHeight(): number {
-    if (frames.length === 0) return 0;
-    return frames.reduce((sum, f) => sum + f.height, 0) + (frames.length - 1) * frameGap;
-  }
+  // ── Layout helpers (delegate to canvasLayout module) ────────
+  function totalCanvasHeight(): number { return _totalCanvasHeight(frames); }
+  function frameOffsetY(i: number): number { return _frameOffsetY(frames, i); }
+  function canvasWidth(): number { return _canvasWidth(frames); }
 
-  /** Y offset (in canvas pixels) of frame at index i */
-  function frameOffsetY(i: number): number {
-    let y = 0;
-    for (let k = 0; k < i; k++) y += frames[k].height + frameGap;
-    return y;
-  }
-
-  /** Width in canvas px (assumed equal across frames; falls back to 0) */
-  function canvasWidth(): number { return frames[0]?.width ?? 0; }
 
   // ── Stage sizing ─────────────────────────────────────────────
   function applyStageSize() {
@@ -131,23 +125,8 @@
     attachZoomHandlers();
     // Load PixelMplus10 once available, then re-render so bubbles use the
     // pixel font instead of the fallback sans-serif.
-    loadBubbleFont().then(() => { if (layer) renderAll(); });
+    loadBubbleFont(pixelMplus10Url).then(() => { if (layer) renderAll(); });
   });
-
-  let bubbleFontPromise: Promise<void> | null = null;
-  function loadBubbleFont(): Promise<void> {
-    if (bubbleFontPromise) return bubbleFontPromise;
-    bubbleFontPromise = (async () => {
-      try {
-        const face = new FontFace(BUBBLE_FONT, `url(${pixelMplus10Url})`);
-        await face.load();
-        (document as any).fonts.add(face);
-      } catch (e) {
-        console.warn('Failed to load bubble font', e);
-      }
-    })();
-    return bubbleFontPromise;
-  }
 
   onDestroy(() => {
     stage?.destroy();
@@ -549,97 +528,22 @@
   let menuOpen = false;
   let menuX = 0;
   let menuY = 0;
+  let menuKind: 'layer' | 'bubble' | null = null;
   let menuFrameId: string | null = null;
   let menuLayerId: string | null = null;
+  let menuBubbleId: string | null = null;
   let suppressNextClick = false;
 
   // ── Speech bubbles ───────────────────────────────────────────
-  /** Padding (in canvas px) between text and bubble background edge */
-  const BUBBLE_PAD = 3;
-  /** Corner radius of the white bubble background */
-  const BUBBLE_RADIUS = 4;
-  /** Radius (canvas px) of the draggable tail-tip handle */
-  const TAIL_HANDLE_R = 3;
-  /**
-   * How far (in canvas px) the tip can lead the base along the chosen edge
-   * before the base starts to slide. Gives the tail an angled appearance
-   * while the user nudges the tip around.
-   */
-  const TAIL_LEAD = 6;
-
-  type BubbleSide = 'top' | 'right' | 'bottom' | 'left';
-
-  /**
-   * Project the tip onto the bubble's nearest edge and return the resulting
-   * side + base midpoint in bubble-local coords. Mirrors the geometry used
-   * inside `drawBubblePath`. Returns null when the tip is inside the rect
-   * (in which case no tail is drawn anyway).
-   */
-  function naturalBase(
-    w: number, h: number, r: number, tx: number, ty: number,
-  ): { side: BubbleSide; bx: number; by: number } | null {
-    const insideRect = tx >= 0 && tx <= w && ty >= 0 && ty <= h;
-    if (insideRect) return null;
-    const cx = w / 2, cy = h / 2;
-    const dx = tx - cx, dy = ty - cy;
-    const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 8));
-    const horiz = Math.abs(dx) * h > Math.abs(dy) * w;
-    const side: BubbleSide = horiz
-      ? (dx > 0 ? 'right' : 'left')
-      : (dy > 0 ? 'bottom' : 'top');
-    if (side === 'top' || side === 'bottom') {
-      const m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, tx));
-      return { side, bx: m, by: side === 'top' ? 0 : h };
-    } else {
-      const m = Math.max(r + baseW / 2, Math.min(h - r - baseW / 2, ty));
-      return { side, bx: side === 'left' ? 0 : w, by: m };
-    }
-  }
-
-  /**
-   * Determine which edge a base point lies on. Used when reading a persisted
-   * base back. Tolerance allows for small float drift after rounding.
-   */
-  function sideOfBase(w: number, h: number, bx: number, by: number): BubbleSide {
-    const eps = 0.5;
-    if (Math.abs(by) <= eps) return 'top';
-    if (Math.abs(by - h) <= eps) return 'bottom';
-    if (Math.abs(bx) <= eps) return 'left';
-    if (Math.abs(bx - w) <= eps) return 'right';
-    // Fall back to closest edge if the base has drifted (e.g. after a font
-    // size change shrank the rect).
-    const dTop = by, dBot = h - by, dLeft = bx, dRight = w - bx;
-    const m = Math.min(dTop, dBot, dLeft, dRight);
-    if (m === dTop) return 'top';
-    if (m === dBot) return 'bottom';
-    if (m === dLeft) return 'left';
-    return 'right';
-  }
 
   function renderBubble(group: Konva.Group, frame: Frame, bubble: SpeechBubble) {
-    // Measure text at native (1x) resolution using a plain canvas context so
-    // the bubble is composed at the same pixel scale as the rest of the
-    // pixel-art and then upscaled with nearest-neighbor.
-    const text = bubble.text || ' ';
-    const lines = text.split('\n');
-    const lineHeight = bubble.fontSize; // matches old Konva.Text lineHeight 1.0
-    const measureCanvas = document.createElement('canvas');
-    const mctx = measureCanvas.getContext('2d')!;
-    mctx.font = `${bubble.fontSize}px "${BUBBLE_FONT}"`;
-    const tw = Math.ceil(Math.max(0, ...lines.map(l => mctx.measureText(l).width)));
-    const th = Math.ceil(lines.length * lineHeight);
-    const bgW = tw + BUBBLE_PAD * 2;
-    const bgH = th + BUBBLE_PAD * 2;
+    const { bgW, bgH, lines } = measureBubble(bubble.text || ' ', bubble.fontSize);
 
-    // Mutable tail tip in bubble-local coords (relative to bubble.x/y, the
-    // top-left of the rect). Updated live while dragging the tip handle so we
-    // can re-rasterize the bubble.
+    // Mutable tail tip in bubble-local coords.
     const tip = { x: bubble.tailX - bubble.x, y: bubble.tailY - bubble.y };
 
-    // Mutable tail base midpoint in bubble-local coords. The base lags the
-    // tip's natural projection by up to TAIL_LEAD pixels so the tail can be
-    // angled. If the persisted bubble has no base yet (older data), fall back
-    // to the natural projection of the tip.
+    // Initialise tail base from persisted data, falling back to the natural
+    // projection of the tip for bubbles that predate the base field.
     let base: { side: BubbleSide; bx: number; by: number } | null = (() => {
       if (bubble.tailBaseX !== undefined && bubble.tailBaseY !== undefined) {
         const lx = bubble.tailBaseX - bubble.x;
@@ -648,102 +552,9 @@
       }
       return naturalBase(bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y);
     })();
+    if (base) base = clampBase(bgW, bgH, BUBBLE_RADIUS, base.side, base.bx, base.by);
 
-    /** Snap a base point onto its edge and clamp it between the corner arcs. */
-    function clampBase(side: BubbleSide, bx: number, by: number): { side: BubbleSide; bx: number; by: number } {
-      const baseW = Math.max(3, Math.min(Math.min(bgW, bgH) / 2, 8));
-      if (side === 'top' || side === 'bottom') {
-        const m = Math.max(BUBBLE_RADIUS + baseW / 2, Math.min(bgW - BUBBLE_RADIUS - baseW / 2, bx));
-        return { side, bx: m, by: side === 'top' ? 0 : bgH };
-      }
-      const m = Math.max(BUBBLE_RADIUS + baseW / 2, Math.min(bgH - BUBBLE_RADIUS - baseW / 2, by));
-      return { side, bx: side === 'left' ? 0 : bgW, by: m };
-    }
-
-    if (base) base = clampBase(base.side, base.bx, base.by);
-
-    /**
-     * Update `base` to follow the current `tip` with hysteresis: while the
-     * tip is on the same side as the base, the base only moves once the tip
-     * has led it by more than TAIL_LEAD along that edge. Crossing to a new
-     * side snaps the base to the new natural projection.
-     */
-    function updateBaseForTip() {
-      const natural = naturalBase(bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y);
-      if (!natural) return; // tip is inside the rect — keep last base, no tail drawn
-      if (!base || natural.side !== base.side) {
-        base = natural;
-        return;
-      }
-      // Same side: slide base toward the natural projection by the excess
-      // beyond TAIL_LEAD along the edge axis.
-      if (natural.side === 'top' || natural.side === 'bottom') {
-        const diff = natural.bx - base.bx;
-        if (Math.abs(diff) > TAIL_LEAD) {
-          const slide = diff - Math.sign(diff) * TAIL_LEAD;
-          base = clampBase(base.side, base.bx + slide, base.by);
-        }
-      } else {
-        const diff = natural.by - base.by;
-        if (Math.abs(diff) > TAIL_LEAD) {
-          const slide = diff - Math.sign(diff) * TAIL_LEAD;
-          base = clampBase(base.side, base.bx, base.by + slide);
-        }
-      }
-    }
-
-    /**
-     * Rasterize the bubble + tail onto an offscreen canvas at native (1x)
-     * resolution. Returns the canvas plus the offset (in bubble-local coords)
-     * from bubble.x/y to the canvas's top-left, so the caller can position the
-     * resulting Konva.Image correctly.
-     */
-    function buildBubbleCanvas() {
-      // Canvas must be big enough to contain both the rect (0,0)-(bgW,bgH) and
-      // the tail tip, which can extend outside the rect in any direction.
-      const minX = Math.floor(Math.min(0, tip.x));
-      const minY = Math.floor(Math.min(0, tip.y));
-      const maxX = Math.ceil(Math.max(bgW, tip.x + 1));
-      const maxY = Math.ceil(Math.max(bgH, tip.y + 1));
-      const cw = Math.max(1, maxX - minX);
-      const ch = Math.max(1, maxY - minY);
-      const c = document.createElement('canvas');
-      c.width = cw;
-      c.height = ch;
-      const ctx = c.getContext('2d')!;
-      ctx.imageSmoothingEnabled = false;
-      ctx.translate(-minX, -minY);
-      drawBubblePath(ctx, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y, base);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-      // Canvas path rendering is always anti-aliased, which leaves
-      // partially-transparent pixels along the rounded corners and the
-      // diagonal tail edges. When the comic is upscaled with nearest
-      // neighbor for export those AA pixels become visible "dithered" /
-      // fuzzy edges. Snap the alpha channel to {0, 255} so the bubble
-      // shape is strictly 1-bit. We do this BEFORE drawing the text so
-      // the text retains its grayscale anti-aliasing against the white
-      // bubble background.
-      const shapeImg = ctx.getImageData(0, 0, c.width, c.height);
-      const sd = shapeImg.data;
-      for (let i = 0; i < sd.length; i += 4) {
-        if (sd[i + 3] >= 128) {
-          sd[i] = 255; sd[i + 1] = 255; sd[i + 2] = 255; sd[i + 3] = 255;
-        } else {
-          sd[i + 3] = 0;
-        }
-      }
-      ctx.putImageData(shapeImg, 0, 0);
-      ctx.fillStyle = '#000000';
-      ctx.font = `${bubble.fontSize}px "${BUBBLE_FONT}"`;
-      ctx.textBaseline = 'top';
-      for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], BUBBLE_PAD, BUBBLE_PAD + i * lineHeight);
-      }
-      return { canvas: c, offX: minX, offY: minY };
-    }
-
-    let built = buildBubbleCanvas();
+    let built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base });
     const kImg = new Konva.Image({
       image: built.canvas,
       x: built.offX,
@@ -765,41 +576,31 @@
       const scale = stage.scaleX();
       const localX = (pos.x - groupAbs.x) / scale;
       const localY = (pos.y - groupAbs.y) / scale;
-      const clampedX = Math.max(-bgW + 8, Math.min(frame.width - 8, localX));
-      const clampedY = Math.max(-bgH + 8, Math.min(frame.height - 8, localY));
       return {
-        x: groupAbs.x + clampedX * scale,
-        y: groupAbs.y + clampedY * scale,
+        x: groupAbs.x + Math.max(-bgW + 8, Math.min(frame.width - 8, localX)) * scale,
+        y: groupAbs.y + Math.max(-bgH + 8, Math.min(frame.height - 8, localY)) * scale,
       };
     });
     bGroup.on('dragmove', () => {
-      // Keep the tip handle (a sibling of bGroup) anchored at the world tail
-      // position by recomputing its position from the bubble's new origin.
-      const newTipWorldX = bGroup.x() + tip.x;
-      const newTipWorldY = bGroup.y() + tip.y;
-      tipHandle.position({ x: newTipWorldX, y: newTipWorldY });
+      tipHandle.position({ x: bGroup.x() + tip.x, y: bGroup.y() + tip.y });
     });
     bGroup.on('dragend', () => {
-      const newX = Math.round(bGroup.x());
-      const newY = Math.round(bGroup.y());
+      const newX = Math.round(bGroup.x()), newY = Math.round(bGroup.y());
       const updated: SpeechBubble = {
         ...bubble,
         x: newX, y: newY,
-        // Tail tip + base stay at the same world (frame-local) position.
         tailX: newX + Math.round(tip.x),
         tailY: newY + Math.round(tip.y),
-        ...(base
-          ? { tailBaseX: newX + Math.round(base.bx), tailBaseY: newY + Math.round(base.by) }
-          : {}),
+        ...(base ? { tailBaseX: newX + Math.round(base.bx), tailBaseY: newY + Math.round(base.by) } : {}),
       };
       dispatch('change', {
         frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },
       });
     });
     group.add(bGroup);
+    attachBubbleLongPress(bGroup, frame.id, bubble.id);
 
-    // Draggable tip handle. Lives as a sibling of bGroup so dragging it
-    // doesn't drag the bubble itself.
+    // Draggable tip handle — sibling of bGroup so it doesn't drag the bubble.
     const tipHandle = new Konva.Circle({
       x: bubble.tailX,
       y: bubble.tailY,
@@ -810,28 +611,22 @@
       draggable: frame.id !== bgAdjustFrameId,
       listening: frame.id !== bgAdjustFrameId,
       name: UI_NODE_NAME,
-      // Make handle scale-independent so it stays a constant screen size.
     });
     tipHandle.dragBoundFunc((pos) => {
       const groupAbs = group.getAbsolutePosition();
       const scale = stage.scaleX();
       const localX = (pos.x - groupAbs.x) / scale;
       const localY = (pos.y - groupAbs.y) / scale;
-      // Allow tip anywhere within (or slightly past) the frame bounds.
-      const clampedX = Math.max(0, Math.min(frame.width, localX));
-      const clampedY = Math.max(0, Math.min(frame.height, localY));
       return {
-        x: groupAbs.x + clampedX * scale,
-        y: groupAbs.y + clampedY * scale,
+        x: groupAbs.x + Math.max(0, Math.min(frame.width, localX)) * scale,
+        y: groupAbs.y + Math.max(0, Math.min(frame.height, localY)) * scale,
       };
     });
     tipHandle.on('dragmove', () => {
-      // Update the live tail position relative to the bubble origin and
-      // re-rasterize the bubble at native resolution so the tail follows.
       tip.x = tipHandle.x() - bGroup.x();
       tip.y = tipHandle.y() - bGroup.y();
-      updateBaseForTip();
-      built = buildBubbleCanvas();
+      base = updateBaseForTip(bgW, bgH, BUBBLE_RADIUS, tip, base);
+      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base });
       kImg.image(built.canvas);
       kImg.position({ x: built.offX, y: built.offY });
       kImg.size({ width: built.canvas.width, height: built.canvas.height });
@@ -843,10 +638,7 @@
         tailX: Math.round(tipHandle.x()),
         tailY: Math.round(tipHandle.y()),
         ...(base
-          ? {
-              tailBaseX: bGroup.x() + Math.round(base.bx),
-              tailBaseY: bGroup.y() + Math.round(base.by),
-            }
+          ? { tailBaseX: bGroup.x() + Math.round(base.bx), tailBaseY: bGroup.y() + Math.round(base.by) }
           : {}),
       };
       dispatch('change', {
@@ -854,87 +646,6 @@
       });
     });
     group.add(tipHandle);
-  }
-
-  /**
-   * Draw a rounded-rect outline with a triangular tail extruding to (tx, ty).
-   * Path is in local coords (top-left = 0,0). When `forcedBase` is provided,
-   * its side + midpoint are used as the tail anchor (allowing an angled tail
-   * that lags behind the tip). Otherwise the tail base is taken from the
-   * closest edge to the tip. If the tip is inside the rect, no tail is drawn.
-   */
-  function drawBubblePath(
-    ctx: CanvasRenderingContext2D,
-    w: number, h: number, r: number,
-    tx: number, ty: number,
-    forcedBase?: { side: BubbleSide; bx: number; by: number } | null,
-  ) {
-    const insideRect = tx >= 0 && tx <= w && ty >= 0 && ty <= h;
-
-    // Tail base width — cap so it always fits between the corner arcs.
-    const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 8));
-
-    // Decide which side hosts the tail base + the midpoint along that side.
-    let side: 'top' | 'right' | 'bottom' | 'left' | null = null;
-    let m = 0;
-    if (!insideRect) {
-      if (forcedBase) {
-        side = forcedBase.side;
-        m = (side === 'top' || side === 'bottom') ? forcedBase.bx : forcedBase.by;
-        // Re-clamp in case the rect shrank since the base was persisted.
-        if (side === 'top' || side === 'bottom') {
-          m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, m));
-        } else {
-          m = Math.max(r + baseW / 2, Math.min(h - r - baseW / 2, m));
-        }
-      } else {
-        const cx = w / 2, cy = h / 2;
-        const dx = tx - cx, dy = ty - cy;
-        const horiz = Math.abs(dx) * h > Math.abs(dy) * w;
-        side = horiz ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top');
-        if (side === 'top' || side === 'bottom') {
-          m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, tx));
-        } else {
-          m = Math.max(r + baseW / 2, Math.min(h - r - baseW / 2, ty));
-        }
-      }
-    }
-
-    ctx.beginPath();
-    ctx.moveTo(r, 0);
-    // ── Top edge ────────────────────────
-    if (side === 'top') {
-      ctx.lineTo(m - baseW / 2, 0);
-      ctx.lineTo(tx, ty);
-      ctx.lineTo(m + baseW / 2, 0);
-    }
-    ctx.lineTo(w - r, 0);
-    ctx.arcTo(w, 0, w, r, r);
-    // ── Right edge ──────────────────────
-    if (side === 'right') {
-      ctx.lineTo(w, m - baseW / 2);
-      ctx.lineTo(tx, ty);
-      ctx.lineTo(w, m + baseW / 2);
-    }
-    ctx.lineTo(w, h - r);
-    ctx.arcTo(w, h, w - r, h, r);
-    // ── Bottom edge ─────────────────────
-    if (side === 'bottom') {
-      ctx.lineTo(m + baseW / 2, h);
-      ctx.lineTo(tx, ty);
-      ctx.lineTo(m - baseW / 2, h);
-    }
-    ctx.lineTo(r, h);
-    ctx.arcTo(0, h, 0, h - r, r);
-    // ── Left edge ───────────────────────
-    if (side === 'left') {
-      ctx.lineTo(0, m + baseW / 2);
-      ctx.lineTo(tx, ty);
-      ctx.lineTo(0, m - baseW / 2);
-    }
-    ctx.lineTo(0, r);
-    ctx.arcTo(0, 0, r, 0, r);
-    ctx.closePath();
   }
 
   function attachLongPress(node: Konva.Image, frameId: string, layerId: string) {
@@ -956,8 +667,46 @@
         // after pointerdown unless we cancel it here.
         node.stopDrag();
         suppressNextClick = true;
+        menuKind = 'layer';
         menuFrameId = frameId;
         menuLayerId = layerId;
+        menuBubbleId = null;
+        menuX = ev.clientX;
+        menuY = ev.clientY;
+        menuOpen = true;
+      }, LONG_PRESS_MS);
+    });
+    node.on('pointermove', (e: any) => {
+      if (timer === null) return;
+      const ev = e.evt as PointerEvent;
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
+        cancel();
+      }
+    });
+    node.on('pointerup pointercancel pointerleave dragstart', cancel);
+  }
+
+  function attachBubbleLongPress(node: Konva.Group, frameId: string, bubbleId: string) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let startX = 0, startY = 0;
+
+    const cancel = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+    };
+
+    node.on('pointerdown', (e: any) => {
+      const ev = e.evt as PointerEvent;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      cancel();
+      timer = setTimeout(() => {
+        timer = null;
+        node.stopDrag();
+        suppressNextClick = true;
+        menuKind = 'bubble';
+        menuFrameId = frameId;
+        menuBubbleId = bubbleId;
+        menuLayerId = null;
         menuX = ev.clientX;
         menuY = ev.clientY;
         menuOpen = true;
@@ -975,8 +724,10 @@
 
   function closeMenu() {
     menuOpen = false;
+    menuKind = null;
     menuFrameId = null;
     menuLayerId = null;
+    menuBubbleId = null;
   }
 
   function menuMoveLayer(direction: 'up' | 'down') {
@@ -1000,6 +751,24 @@
       frame: { ...f, layers: f.layers.map(l =>
         l.id === menuLayerId ? { ...l, flippedX: !l.flippedX } : l
       ) },
+    });
+    closeMenu();
+  }
+
+  function menuDeleteLayer() {
+    const f = menuFrameId ? frames.find(fr => fr.id === menuFrameId) : null;
+    if (!f || !menuLayerId) { closeMenu(); return; }
+    dispatch('change', {
+      frame: { ...f, layers: f.layers.filter(l => l.id !== menuLayerId) },
+    });
+    closeMenu();
+  }
+
+  function menuDeleteBubble() {
+    const f = menuFrameId ? frames.find(fr => fr.id === menuFrameId) : null;
+    if (!f || !menuBubbleId) { closeMenu(); return; }
+    dispatch('change', {
+      frame: { ...f, bubbles: (f.bubbles ?? []).filter(b => b.id !== menuBubbleId) },
     });
     closeMenu();
   }
@@ -1201,9 +970,14 @@
   <!-- Backdrop captures clicks/taps outside the menu to close it. -->
   <div class="ctx-backdrop" on:click={closeMenu} on:contextmenu|preventDefault={closeMenu}></div>
   <div class="ctx-menu" style="left: {menuX}px; top: {menuY}px;">
-    <button class="ctx-item" on:click={() => menuMoveLayer('up')}>▲ Move up</button>
-    <button class="ctx-item" on:click={() => menuMoveLayer('down')}>▼ Move down</button>
-    <button class="ctx-item" on:click={menuFlipLayer}>⇋ Flip horizontal</button>
+    {#if menuKind === 'bubble'}
+      <button class="ctx-item ctx-item-danger" on:click={menuDeleteBubble}>✕ Delete</button>
+    {:else}
+      <button class="ctx-item" on:click={() => menuMoveLayer('up')}>▲ Move up</button>
+      <button class="ctx-item" on:click={() => menuMoveLayer('down')}>▼ Move down</button>
+      <button class="ctx-item" on:click={menuFlipLayer}>⇋ Flip horizontal</button>
+      <button class="ctx-item ctx-item-danger" on:click={menuDeleteLayer}>✕ Delete</button>
+    {/if}
   </div>
 {/if}
 
@@ -1249,4 +1023,6 @@
   }
   .ctx-item:hover { background: #2a2a4a; }
   .ctx-item:active { background: #3a3a6a; }
+  .ctx-item-danger { color: #ff8080; }
+  .ctx-item-danger:hover { background: #4a2020; }
 </style>

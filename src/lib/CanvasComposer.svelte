@@ -1124,18 +1124,37 @@
     const oldW = stage.width();
     const oldH = stage.height();
 
+    // Stack frames flush (no FRAME_GAP) for the export so the comic prints
+    // as one continuous image. Remember each group's old Y to restore after.
+    const oldGroupYs = new Map<string, number>();
+    let stackedY = 0;
+    for (const f of frames) {
+      const g = frameGroups.get(f.id);
+      if (g) {
+        oldGroupYs.set(f.id, g.y());
+        g.y(stackedY);
+      }
+      stackedY += f.height;
+    }
+    const exportHeight = frames.reduce((s, f) => s + f.height, 0);
+
     // Render at native resolution (no displayScale, no zoom, no bottom padding)
-    // so the exported PNG is exactly canvasWidth × totalCanvasHeight pixels at
+    // so the exported PNG is exactly canvasWidth × exportHeight pixels at
     // 1x. Higher scales are achieved via pixelRatio (nearest-neighbor).
     stage.scale({ x: 1, y: 1 });
     stage.width(canvasWidth());
-    stage.height(totalCanvasHeight());
+    stage.height(exportHeight);
     layer.batchDraw();
 
     let url = '';
     try {
       url = stage.toDataURL({ pixelRatio: safeScale });
     } finally {
+      // Restore frame group positions.
+      for (const [id, y] of oldGroupYs) {
+        const g = frameGroups.get(id);
+        if (g) g.y(y);
+      }
       stage.scale(oldScale);
       stage.width(oldW);
       stage.height(oldH);

@@ -958,8 +958,14 @@
   :global(button:hover:not(:disabled)) { background: #35356a; border-color: #7070cc; }
   :global(button:disabled) { opacity: 0.4; cursor: default; }
 
-  .app-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-  .topbar { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #1a1a2e; border-bottom: 1px solid #333; flex-shrink: 0; }
+  .app-shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
+  .topbar { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #1a1a2e; border-bottom: 1px solid #333; flex-shrink: 0;
+    /* When installed as a fullscreen PWA, leave room for the OS status bar
+       / notch above the topbar and respect left/right safe-area insets. */
+    padding-top: calc(6px + env(safe-area-inset-top, 0px));
+    padding-left: calc(10px + env(safe-area-inset-left, 0px));
+    padding-right: calc(10px + env(safe-area-inset-right, 0px));
+  }
 
   /* Work area: canvas on the left, optional desktop dock on the right. */
   .work-area { flex: 1; display: flex; min-height: 0; overflow: hidden; }

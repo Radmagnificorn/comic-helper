@@ -50,6 +50,17 @@
     return libraryId ?? PROJECT_KEY;
   }
 
+  // Avoid `bind:value={obj[key]}` because Svelte 5's legacy compiler emits
+  // an `invalidate_inner_signals` call on every set, which mis-evaluates
+  // keyed `{#each}` blocks elsewhere in the template and throws
+  // ReferenceErrors. Use explicit setters instead.
+  function setNewName(key: string, value: string) {
+    newName = { ...newName, [key]: value };
+  }
+  function setNewType(key: string, value: 'character' | 'background') {
+    newType = { ...newType, [key]: value };
+  }
+
   function handleCreate(libraryId: string | null) {
     const key = containerKey(libraryId);
     const name = (newName[key] ?? '').trim();
@@ -95,11 +106,15 @@
 
   <div class="create-row">
     <input
-      bind:value={newName[PROJECT_KEY]}
+      value={newName[PROJECT_KEY] ?? ''}
+      on:input={e => setNewName(PROJECT_KEY, (e.target as HTMLInputElement).value)}
       placeholder="Asset name"
       on:keydown={e => e.key === 'Enter' && handleCreate(null)}
     />
-    <select bind:value={newType[PROJECT_KEY]}>
+    <select
+      value={newType[PROJECT_KEY] ?? 'character'}
+      on:change={e => setNewType(PROJECT_KEY, (e.target as HTMLSelectElement).value as 'character' | 'background')}
+    >
       <option value="character">Character</option>
       <option value="background">Background</option>
     </select>
@@ -155,33 +170,37 @@
   {/if}
 
   <!-- ── Attached libraries ──────────────────────────────────── -->
-  {#each attachedLibraries as lib (lib.id)}
+  {#each attachedLibraries as attachedLib (attachedLib.id)}
     <div class="section-header library">
-      <span>📚 {lib.name}</span>
+      <span>📚 {attachedLib.name}</span>
       <span class="lib-actions">
-        <button class="lib-btn" title="Detach library from this project" on:click={() => dispatch('detachLibrary', { libraryId: lib.id })}>Detach</button>
-        <button class="lib-btn danger" title="Permanently delete this library" on:click={() => confirmDeleteLibrary(lib)}>Delete</button>
+        <button class="lib-btn" title="Detach library from this project" on:click={() => dispatch('detachLibrary', { libraryId: attachedLib.id })}>Detach</button>
+        <button class="lib-btn danger" title="Permanently delete this library" on:click={() => confirmDeleteLibrary(attachedLib)}>Delete</button>
       </span>
     </div>
 
     <div class="create-row">
       <input
-        bind:value={newName[lib.id]}
+        value={newName[attachedLib.id] ?? ''}
+        on:input={e => setNewName(attachedLib.id, (e.target as HTMLInputElement).value)}
         placeholder="Asset name"
-        on:keydown={e => e.key === 'Enter' && handleCreate(lib.id)}
+        on:keydown={e => e.key === 'Enter' && handleCreate(attachedLib.id)}
       />
-      <select bind:value={newType[lib.id]}>
+      <select
+        value={newType[attachedLib.id] ?? 'character'}
+        on:change={e => setNewType(attachedLib.id, (e.target as HTMLSelectElement).value as 'character' | 'background')}
+      >
         <option value="character">Character</option>
         <option value="background">Background</option>
       </select>
-      <button on:click={() => handleCreate(lib.id)}>+ Add</button>
+      <button on:click={() => handleCreate(attachedLib.id)}>+ Add</button>
     </div>
 
-    {#if (libraryAssets[lib.id] ?? []).length === 0}
+    {#if (libraryAssets[attachedLib.id] ?? []).length === 0}
       <p class="empty small">No assets in this library yet.</p>
     {:else}
       <ul class="asset-list">
-        {#each libraryAssets[lib.id] ?? [] as asset (asset.id)}
+        {#each libraryAssets[attachedLib.id] ?? [] as asset (asset.id)}
           <li class="asset-item">
             <button class="asset-header" on:click={() => expandedId = expandedId === asset.id ? null : asset.id}>
               <span class="asset-type-badge {asset.type}">{asset.type[0].toUpperCase()}</span>
@@ -230,8 +249,8 @@
     <div class="create-row">
       <select bind:value={attachLibrarySelection}>
         <option value="">Add existing library…</option>
-        {#each availableLibraries as lib (lib.id)}
-          <option value={lib.id}>{lib.name} ({lib.assetIds.length})</option>
+        {#each availableLibraries as availLib (availLib.id)}
+          <option value={availLib.id}>{availLib.name} ({availLib.assetIds.length})</option>
         {/each}
       </select>
       <button on:click={handleAttachLibrary} disabled={!attachLibrarySelection}>Attach</button>

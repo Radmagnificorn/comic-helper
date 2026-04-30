@@ -619,9 +619,10 @@
   // ── Export ─────────────────────────────────────────────────────
   /** PNG export scale: 1 = native, 4 / 8 = nearest-neighbor upscale */
   let exportScale: 1 | 4 | 8 = 1;
-  function exportComic() {
+  async function exportComic() {
     if (!composerRef) return;
-    const dataUrl = composerRef.exportPng(exportScale);
+    const dataUrl = await composerRef.exportPng(exportScale);
+    if (!dataUrl) return;
     const a = document.createElement('a');
     a.href = dataUrl;
     const suffix = exportScale > 1 ? `@${exportScale}x` : '';

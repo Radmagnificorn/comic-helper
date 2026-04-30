@@ -1112,7 +1112,7 @@
    * UI overlay elements (selection outline, frame resize handle, background
    * mask + handles, speech-bubble tail handles) are hidden during export.
    */
-  export function exportPng(scale: number = 1): string {
+  export async function exportPng(scale: number = 1): Promise<string> {
     if (!stage) return '';
     const safeScale = Math.max(1, Math.floor(scale) || 1);
 
@@ -1148,7 +1148,29 @@
 
     let url = '';
     try {
-      url = stage.toDataURL({ pixelRatio: safeScale });
+      // Always render at native 1x first so the source pixels are crisp.
+      // Konva's `pixelRatio` upscale path can apply smoothing on some
+      // browsers, which softens pixel art. For >1x we rasterize the 1x
+      // image and then upscale it ourselves with imageSmoothingEnabled =
+      // false (true nearest-neighbor).
+      const baseUrl = stage.toDataURL({ pixelRatio: 1 });
+      if (safeScale === 1) {
+        url = baseUrl;
+      } else {
+        const img = await new Promise<HTMLImageElement>((res, rej) => {
+          const i = new Image();
+          i.onload = () => res(i);
+          i.onerror = rej;
+          i.src = baseUrl;
+        });
+        const off = document.createElement('canvas');
+        off.width = img.naturalWidth * safeScale;
+        off.height = img.naturalHeight * safeScale;
+        const ctx = off.getContext('2d')!;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0, off.width, off.height);
+        url = off.toDataURL('image/png');
+      }
     } finally {
       // Restore frame group positions.
       for (const [id, y] of oldGroupYs) {

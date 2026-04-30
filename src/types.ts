@@ -66,6 +66,14 @@ export interface SpeechBubble {
    * inferred from the bubble edge nearest the tip. */
   tailX: number;
   tailY: number;
+  /**
+   * Tail base midpoint in canvas pixels (frame-relative). Lies on one of the
+   * bubble's edges. Persisted so that the base can lag the tip while dragging,
+   * allowing the tail to be angled. If omitted, callers should fall back to
+   * the natural projection of the tip onto the closest edge.
+   */
+  tailBaseX?: number;
+  tailBaseY?: number;
 }
 
 export interface Frame {
@@ -93,6 +101,20 @@ export interface Project {
   /** Default background color for new frames */
   bgColor: string;
   frameIds: string[];
+  /** Project-private asset ids (deleted when the project is deleted) */
+  assetIds: string[];
+  /** Shared asset libraries attached to this project. The library and its
+   * assets are NOT owned by the project — detaching or deleting the project
+   * leaves the library intact for other projects to use. */
+  libraryIds?: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A named, top-level group of assets that can be attached to multiple projects. */
+export interface AssetLibrary {
+  id: string;
+  name: string;
   assetIds: string[];
   createdAt: number;
   updatedAt: number;

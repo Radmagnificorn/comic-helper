@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Project, Frame, Asset } from './types';
+  import type { Project, Frame, Asset, AssetLibrary } from './types';
   import {
     getProjects, saveProject, deleteProject,
     getFrames, saveFrame, deleteFrame,
     getAssets, saveAsset, deleteAsset, deleteAssetImage,
+    getAssetLibraries, saveAssetLibrary, deleteAssetLibrary,
   } from './db';
   import ProjectScreen from './lib/ProjectScreen.svelte';
   import AssetPanel from './lib/AssetPanel.svelte';
@@ -15,7 +16,17 @@
   let projects: Project[] = [];
   let currentProject: Project | null = null;
   let frames: Frame[] = [];
-  let assets: Asset[] = [];
+  /** Project-private assets only. */
+  let projectAssets: Asset[] = [];
+  /** All known libraries (loaded once on boot). */
+  let libraries: AssetLibrary[] = [];
+  /** Assets belonging to libraries attached to the current project, keyed by libraryId. */
+  let libraryAssets: Record<string, Asset[]> = {};
+  /** Combined asset list passed down to the canvas + inspector. */
+  $: assets = [
+    ...projectAssets,
+    ...Object.values(libraryAssets).flat(),
+  ];
   let selectedFrameId: string | null = null;
   /** id of the frame whose background is currently being adjusted */
   let bgAdjustFrameId: string | null = null;
@@ -46,7 +57,7 @@
 
   // ── Boot ───────────────────────────────────────────────────────
   onMount(async () => {
-    projects = await getProjects();
+    [projects, libraries] = await Promise.all([getProjects(), getAssetLibraries()]);
   });
 
   // ── Project ops ────────────────────────────────────────────────
@@ -54,14 +65,25 @@
     const p = projects.find(pr => pr.id === id);
     if (!p) return;
     currentProject = p;
-    [frames, assets] = await Promise.all([getFrames(p.frameIds), getAssets(p.assetIds)]);
+    const attachedLibIds = p.libraryIds ?? [];
+    const [loadedFrames, loadedProjectAssets, ...loadedLibAssets] = await Promise.all([
+      getFrames(p.frameIds),
+      getAssets(p.assetIds),
+      ...attachedLibIds.map(libId => {
+        const lib = libraries.find(l => l.id === libId);
+        return getAssets(lib?.assetIds ?? []);
+      }),
+    ]);
+    frames = loadedFrames;
+    projectAssets = loadedProjectAssets;
+    libraryAssets = Object.fromEntries(attachedLibIds.map((id, i) => [id, loadedLibAssets[i]]));
     selectedFrameId = frames[0]?.id ?? null;
   }
 
   async function createProject(e: CustomEvent<{ name: string; canvasWidth: number; bgColor: string }>) {
     const { name, canvasWidth, bgColor } = e.detail;
     const id = crypto.randomUUID();
-    const p: Project = { id, name, canvasWidth, bgColor, frameIds: [], assetIds: [], createdAt: Date.now(), updatedAt: Date.now() };
+    const p: Project = { id, name, canvasWidth, bgColor, frameIds: [], assetIds: [], libraryIds: [], createdAt: Date.now(), updatedAt: Date.now() };
     await saveProject(p);
     projects = [...projects, p];
     await openProject(id);
@@ -75,7 +97,8 @@
   function closeProject() {
     currentProject = null;
     frames = [];
-    assets = [];
+    projectAssets = [];
+    libraryAssets = {};
     selectedFrameId = null;
   }
 
@@ -149,20 +172,44 @@
   }
 
   // ── Asset ops ──────────────────────────────────────────────────
-  async function handleCreateAsset(e: CustomEvent<{ name: string; type: 'character' | 'background' }>) {
+  /** Look up which container an existing asset id belongs to. Returns null
+   * for project-private assets, the libraryId for library-owned assets, or
+   * undefined if not found. */
+  function findAssetContainer(assetId: string): string | null | undefined {
+    if (projectAssets.some(a => a.id === assetId)) return null;
+    for (const [libId, list] of Object.entries(libraryAssets)) {
+      if (list.some(a => a.id === assetId)) return libId;
+    }
+    return undefined;
+  }
+
+  async function handleCreateAsset(e: CustomEvent<{ name: string; type: 'character' | 'background'; libraryId: string | null }>) {
     if (!currentProject) return;
+    const { name, type, libraryId } = e.detail;
     const id = crypto.randomUUID();
-    const asset: Asset = { id, name: e.detail.name, type: e.detail.type, images: [] };
+    const asset: Asset = { id, name, type, images: [] };
     await saveAsset(asset);
-    assets = [...assets, asset];
-    const updated: Project = { ...currentProject, assetIds: [...currentProject.assetIds, id], updatedAt: Date.now() };
-    await saveProject(updated);
-    currentProject = updated;
+    if (libraryId === null) {
+      projectAssets = [...projectAssets, asset];
+      const updated: Project = { ...currentProject, assetIds: [...currentProject.assetIds, id], updatedAt: Date.now() };
+      await saveProject(updated);
+      currentProject = updated;
+    } else {
+      const lib = libraries.find(l => l.id === libraryId);
+      if (!lib) return;
+      const updatedLib: AssetLibrary = { ...lib, assetIds: [...lib.assetIds, id], updatedAt: Date.now() };
+      await saveAssetLibrary(updatedLib);
+      libraries = libraries.map(l => l.id === libraryId ? updatedLib : l);
+      libraryAssets = { ...libraryAssets, [libraryId]: [...(libraryAssets[libraryId] ?? []), asset] };
+    }
   }
 
   async function handleUploadImages(e: CustomEvent<{ assetId: string; files: FileList }>) {
     const { assetId, files } = e.detail;
-    const asset = assets.find(a => a.id === assetId);
+    const container = findAssetContainer(assetId);
+    if (container === undefined) return;
+    const sourceList = container === null ? projectAssets : (libraryAssets[container] ?? []);
+    const asset = sourceList.find(a => a.id === assetId);
     if (!asset) return;
     const newImages = await Promise.all(
       Array.from(files).map(async file => ({
@@ -173,25 +220,105 @@
     );
     const updated: Asset = { ...asset, images: [...asset.images, ...newImages] };
     await saveAsset(updated);
-    assets = assets.map(a => a.id === assetId ? updated : a);
+    if (container === null) {
+      projectAssets = projectAssets.map(a => a.id === assetId ? updated : a);
+    } else {
+      libraryAssets = { ...libraryAssets, [container]: (libraryAssets[container] ?? []).map(a => a.id === assetId ? updated : a) };
+    }
   }
 
   async function handleDeleteImage(e: CustomEvent<{ assetId: string; imageId: string }>) {
     const { assetId, imageId } = e.detail;
     await deleteAssetImage(imageId);
-    assets = assets.map(a =>
-      a.id === assetId ? { ...a, images: a.images.filter(i => i.id !== imageId) } : a
-    );
+    const container = findAssetContainer(assetId);
+    if (container === null) {
+      projectAssets = projectAssets.map(a =>
+        a.id === assetId ? { ...a, images: a.images.filter(i => i.id !== imageId) } : a
+      );
+    } else if (container) {
+      libraryAssets = { ...libraryAssets, [container]: (libraryAssets[container] ?? []).map(a =>
+        a.id === assetId ? { ...a, images: a.images.filter(i => i.id !== imageId) } : a
+      ) };
+    }
   }
 
   async function handleDeleteAsset(e: CustomEvent<{ assetId: string }>) {
     if (!currentProject) return;
     const { assetId } = e.detail;
+    const container = findAssetContainer(assetId);
+    if (container === undefined) return;
     await deleteAsset(assetId);
-    assets = assets.filter(a => a.id !== assetId);
-    const updated: Project = { ...currentProject, assetIds: currentProject.assetIds.filter(i => i !== assetId), updatedAt: Date.now() };
+    if (container === null) {
+      projectAssets = projectAssets.filter(a => a.id !== assetId);
+      const updated: Project = { ...currentProject, assetIds: currentProject.assetIds.filter(i => i !== assetId), updatedAt: Date.now() };
+      await saveProject(updated);
+      currentProject = updated;
+    } else {
+      const lib = libraries.find(l => l.id === container);
+      if (lib) {
+        const updatedLib: AssetLibrary = { ...lib, assetIds: lib.assetIds.filter(i => i !== assetId), updatedAt: Date.now() };
+        await saveAssetLibrary(updatedLib);
+        libraries = libraries.map(l => l.id === container ? updatedLib : l);
+      }
+      libraryAssets = { ...libraryAssets, [container]: (libraryAssets[container] ?? []).filter(a => a.id !== assetId) };
+    }
+  }
+
+  // ── Asset library ops ──────────────────────────────────────────
+  async function handleCreateLibrary(e: CustomEvent<{ name: string }>) {
+    if (!currentProject) return;
+    const id = crypto.randomUUID();
+    const lib: AssetLibrary = { id, name: e.detail.name, assetIds: [], createdAt: Date.now(), updatedAt: Date.now() };
+    await saveAssetLibrary(lib);
+    libraries = [...libraries, lib];
+    // Auto-attach the freshly created library to the current project so the
+    // user can immediately add assets to it.
+    const updated: Project = { ...currentProject, libraryIds: [...(currentProject.libraryIds ?? []), id], updatedAt: Date.now() };
     await saveProject(updated);
     currentProject = updated;
+    libraryAssets = { ...libraryAssets, [id]: [] };
+  }
+
+  async function handleAttachLibrary(e: CustomEvent<{ libraryId: string }>) {
+    if (!currentProject) return;
+    const { libraryId } = e.detail;
+    if ((currentProject.libraryIds ?? []).includes(libraryId)) return;
+    const lib = libraries.find(l => l.id === libraryId);
+    if (!lib) return;
+    const loaded = await getAssets(lib.assetIds);
+    const updated: Project = { ...currentProject, libraryIds: [...(currentProject.libraryIds ?? []), libraryId], updatedAt: Date.now() };
+    await saveProject(updated);
+    currentProject = updated;
+    libraryAssets = { ...libraryAssets, [libraryId]: loaded };
+  }
+
+  async function handleDetachLibrary(e: CustomEvent<{ libraryId: string }>) {
+    if (!currentProject) return;
+    const { libraryId } = e.detail;
+    const updated: Project = { ...currentProject, libraryIds: (currentProject.libraryIds ?? []).filter(id => id !== libraryId), updatedAt: Date.now() };
+    await saveProject(updated);
+    currentProject = updated;
+    const next = { ...libraryAssets };
+    delete next[libraryId];
+    libraryAssets = next;
+  }
+
+  async function handleDeleteLibrary(e: CustomEvent<{ libraryId: string }>) {
+    const { libraryId } = e.detail;
+    await deleteAssetLibrary(libraryId);
+    libraries = libraries.filter(l => l.id !== libraryId);
+    const next = { ...libraryAssets };
+    delete next[libraryId];
+    libraryAssets = next;
+    if (currentProject && (currentProject.libraryIds ?? []).includes(libraryId)) {
+      const updated: Project = { ...currentProject, libraryIds: (currentProject.libraryIds ?? []).filter(id => id !== libraryId), updatedAt: Date.now() };
+      currentProject = updated;
+    }
+    // Other projects in `projects` may still reference the deleted library;
+    // db.deleteAssetLibrary already detached them in IDB. Reflect that here.
+    projects = projects.map(p => (p.libraryIds ?? []).includes(libraryId)
+      ? { ...p, libraryIds: (p.libraryIds ?? []).filter(id => id !== libraryId) }
+      : p);
   }
 
   // ── Export ─────────────────────────────────────────────────────
@@ -281,11 +408,20 @@
             />
           {:else if activeDrawer === 'assets'}
             <AssetPanel
-              {assets}
+              {projectAssets}
+              attachedLibraries={(currentProject.libraryIds ?? [])
+                .map(id => libraries.find(l => l.id === id))
+                .filter((l): l is AssetLibrary => !!l)}
+              {libraryAssets}
+              availableLibraries={libraries.filter(l => !(currentProject?.libraryIds ?? []).includes(l.id))}
               on:createAsset={handleCreateAsset}
               on:uploadImages={handleUploadImages}
               on:deleteImage={handleDeleteImage}
               on:deleteAsset={handleDeleteAsset}
+              on:createLibrary={handleCreateLibrary}
+              on:attachLibrary={handleAttachLibrary}
+              on:detachLibrary={handleDetachLibrary}
+              on:deleteLibrary={handleDeleteLibrary}
             />
           {/if}
         </div>

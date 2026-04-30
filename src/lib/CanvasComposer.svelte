@@ -560,6 +560,61 @@
   const BUBBLE_RADIUS = 4;
   /** Radius (canvas px) of the draggable tail-tip handle */
   const TAIL_HANDLE_R = 3;
+  /**
+   * How far (in canvas px) the tip can lead the base along the chosen edge
+   * before the base starts to slide. Gives the tail an angled appearance
+   * while the user nudges the tip around.
+   */
+  const TAIL_LEAD = 6;
+
+  type BubbleSide = 'top' | 'right' | 'bottom' | 'left';
+
+  /**
+   * Project the tip onto the bubble's nearest edge and return the resulting
+   * side + base midpoint in bubble-local coords. Mirrors the geometry used
+   * inside `drawBubblePath`. Returns null when the tip is inside the rect
+   * (in which case no tail is drawn anyway).
+   */
+  function naturalBase(
+    w: number, h: number, r: number, tx: number, ty: number,
+  ): { side: BubbleSide; bx: number; by: number } | null {
+    const insideRect = tx >= 0 && tx <= w && ty >= 0 && ty <= h;
+    if (insideRect) return null;
+    const cx = w / 2, cy = h / 2;
+    const dx = tx - cx, dy = ty - cy;
+    const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 8));
+    const horiz = Math.abs(dx) * h > Math.abs(dy) * w;
+    const side: BubbleSide = horiz
+      ? (dx > 0 ? 'right' : 'left')
+      : (dy > 0 ? 'bottom' : 'top');
+    if (side === 'top' || side === 'bottom') {
+      const m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, tx));
+      return { side, bx: m, by: side === 'top' ? 0 : h };
+    } else {
+      const m = Math.max(r + baseW / 2, Math.min(h - r - baseW / 2, ty));
+      return { side, bx: side === 'left' ? 0 : w, by: m };
+    }
+  }
+
+  /**
+   * Determine which edge a base point lies on. Used when reading a persisted
+   * base back. Tolerance allows for small float drift after rounding.
+   */
+  function sideOfBase(w: number, h: number, bx: number, by: number): BubbleSide {
+    const eps = 0.5;
+    if (Math.abs(by) <= eps) return 'top';
+    if (Math.abs(by - h) <= eps) return 'bottom';
+    if (Math.abs(bx) <= eps) return 'left';
+    if (Math.abs(bx - w) <= eps) return 'right';
+    // Fall back to closest edge if the base has drifted (e.g. after a font
+    // size change shrank the rect).
+    const dTop = by, dBot = h - by, dLeft = bx, dRight = w - bx;
+    const m = Math.min(dTop, dBot, dLeft, dRight);
+    if (m === dTop) return 'top';
+    if (m === dBot) return 'bottom';
+    if (m === dLeft) return 'left';
+    return 'right';
+  }
 
   function renderBubble(group: Konva.Group, frame: Frame, bubble: SpeechBubble) {
     // Measure text at native (1x) resolution using a plain canvas context so
@@ -580,6 +635,62 @@
     // top-left of the rect). Updated live while dragging the tip handle so we
     // can re-rasterize the bubble.
     const tip = { x: bubble.tailX - bubble.x, y: bubble.tailY - bubble.y };
+
+    // Mutable tail base midpoint in bubble-local coords. The base lags the
+    // tip's natural projection by up to TAIL_LEAD pixels so the tail can be
+    // angled. If the persisted bubble has no base yet (older data), fall back
+    // to the natural projection of the tip.
+    let base: { side: BubbleSide; bx: number; by: number } | null = (() => {
+      if (bubble.tailBaseX !== undefined && bubble.tailBaseY !== undefined) {
+        const lx = bubble.tailBaseX - bubble.x;
+        const ly = bubble.tailBaseY - bubble.y;
+        return { side: sideOfBase(bgW, bgH, lx, ly), bx: lx, by: ly };
+      }
+      return naturalBase(bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y);
+    })();
+
+    /** Snap a base point onto its edge and clamp it between the corner arcs. */
+    function clampBase(side: BubbleSide, bx: number, by: number): { side: BubbleSide; bx: number; by: number } {
+      const baseW = Math.max(3, Math.min(Math.min(bgW, bgH) / 2, 8));
+      if (side === 'top' || side === 'bottom') {
+        const m = Math.max(BUBBLE_RADIUS + baseW / 2, Math.min(bgW - BUBBLE_RADIUS - baseW / 2, bx));
+        return { side, bx: m, by: side === 'top' ? 0 : bgH };
+      }
+      const m = Math.max(BUBBLE_RADIUS + baseW / 2, Math.min(bgH - BUBBLE_RADIUS - baseW / 2, by));
+      return { side, bx: side === 'left' ? 0 : bgW, by: m };
+    }
+
+    if (base) base = clampBase(base.side, base.bx, base.by);
+
+    /**
+     * Update `base` to follow the current `tip` with hysteresis: while the
+     * tip is on the same side as the base, the base only moves once the tip
+     * has led it by more than TAIL_LEAD along that edge. Crossing to a new
+     * side snaps the base to the new natural projection.
+     */
+    function updateBaseForTip() {
+      const natural = naturalBase(bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y);
+      if (!natural) return; // tip is inside the rect — keep last base, no tail drawn
+      if (!base || natural.side !== base.side) {
+        base = natural;
+        return;
+      }
+      // Same side: slide base toward the natural projection by the excess
+      // beyond TAIL_LEAD along the edge axis.
+      if (natural.side === 'top' || natural.side === 'bottom') {
+        const diff = natural.bx - base.bx;
+        if (Math.abs(diff) > TAIL_LEAD) {
+          const slide = diff - Math.sign(diff) * TAIL_LEAD;
+          base = clampBase(base.side, base.bx + slide, base.by);
+        }
+      } else {
+        const diff = natural.by - base.by;
+        if (Math.abs(diff) > TAIL_LEAD) {
+          const slide = diff - Math.sign(diff) * TAIL_LEAD;
+          base = clampBase(base.side, base.bx, base.by + slide);
+        }
+      }
+    }
 
     /**
      * Rasterize the bubble + tail onto an offscreen canvas at native (1x)
@@ -602,7 +713,7 @@
       const ctx = c.getContext('2d')!;
       ctx.imageSmoothingEnabled = false;
       ctx.translate(-minX, -minY);
-      drawBubblePath(ctx, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y);
+      drawBubblePath(ctx, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y, base);
       ctx.fillStyle = '#ffffff';
       ctx.fill();
       ctx.fillStyle = '#000000';
@@ -656,9 +767,12 @@
       const updated: SpeechBubble = {
         ...bubble,
         x: newX, y: newY,
-        // Tail tip stays at the same world (frame-local) position.
+        // Tail tip + base stay at the same world (frame-local) position.
         tailX: newX + Math.round(tip.x),
         tailY: newY + Math.round(tip.y),
+        ...(base
+          ? { tailBaseX: newX + Math.round(base.bx), tailBaseY: newY + Math.round(base.by) }
+          : {}),
       };
       dispatch('change', {
         frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },
@@ -698,6 +812,7 @@
       // re-rasterize the bubble at native resolution so the tail follows.
       tip.x = tipHandle.x() - bGroup.x();
       tip.y = tipHandle.y() - bGroup.y();
+      updateBaseForTip();
       built = buildBubbleCanvas();
       kImg.image(built.canvas);
       kImg.position({ x: built.offX, y: built.offY });
@@ -709,6 +824,12 @@
         ...bubble,
         tailX: Math.round(tipHandle.x()),
         tailY: Math.round(tipHandle.y()),
+        ...(base
+          ? {
+              tailBaseX: bGroup.x() + Math.round(base.bx),
+              tailBaseY: bGroup.y() + Math.round(base.by),
+            }
+          : {}),
       };
       dispatch('change', {
         frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },
@@ -719,34 +840,46 @@
 
   /**
    * Draw a rounded-rect outline with a triangular tail extruding to (tx, ty).
-   * Path is in local coords (top-left = 0,0). Uses the closest edge to anchor
-   * the tail base. If the tip is inside the rect, no tail is drawn.
+   * Path is in local coords (top-left = 0,0). When `forcedBase` is provided,
+   * its side + midpoint are used as the tail anchor (allowing an angled tail
+   * that lags behind the tip). Otherwise the tail base is taken from the
+   * closest edge to the tip. If the tip is inside the rect, no tail is drawn.
    */
   function drawBubblePath(
     ctx: CanvasRenderingContext2D,
     w: number, h: number, r: number,
     tx: number, ty: number,
+    forcedBase?: { side: BubbleSide; bx: number; by: number } | null,
   ) {
-    const cx = w / 2, cy = h / 2;
-    const dx = tx - cx, dy = ty - cy;
     const insideRect = tx >= 0 && tx <= w && ty >= 0 && ty <= h;
-
-    // Decide which side hosts the tail base.
-    let side: 'top' | 'right' | 'bottom' | 'left' | null = null;
-    if (!insideRect) {
-      const horiz = Math.abs(dx) * h > Math.abs(dy) * w;
-      side = horiz ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top');
-    }
 
     // Tail base width — cap so it always fits between the corner arcs.
     const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 8));
 
-    // Compute base midpoint along the chosen edge by projecting tip.
+    // Decide which side hosts the tail base + the midpoint along that side.
+    let side: 'top' | 'right' | 'bottom' | 'left' | null = null;
     let m = 0;
-    if (side === 'top' || side === 'bottom') {
-      m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, tx));
-    } else if (side === 'left' || side === 'right') {
-      m = Math.max(r + baseW / 2, Math.min(h - r - baseW / 2, ty));
+    if (!insideRect) {
+      if (forcedBase) {
+        side = forcedBase.side;
+        m = (side === 'top' || side === 'bottom') ? forcedBase.bx : forcedBase.by;
+        // Re-clamp in case the rect shrank since the base was persisted.
+        if (side === 'top' || side === 'bottom') {
+          m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, m));
+        } else {
+          m = Math.max(r + baseW / 2, Math.min(h - r - baseW / 2, m));
+        }
+      } else {
+        const cx = w / 2, cy = h / 2;
+        const dx = tx - cx, dy = ty - cy;
+        const horiz = Math.abs(dx) * h > Math.abs(dy) * w;
+        side = horiz ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top');
+        if (side === 'top' || side === 'bottom') {
+          m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, tx));
+        } else {
+          m = Math.max(r + baseW / 2, Math.min(h - r - baseW / 2, ty));
+        }
+      }
     }
 
     ctx.beginPath();

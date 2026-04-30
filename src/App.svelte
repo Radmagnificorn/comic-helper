@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Project, Frame, Asset, AssetLibrary } from './types';
+  import type { Project, Frame, Asset, AssetLibrary, FrameLayer, SpeechBubble } from './types';
   import {
     getProjects, saveProject, deleteProject,
     getFrames, saveFrame, deleteFrame,
@@ -388,6 +388,56 @@
     a.download = `${currentProject?.name ?? 'comic'}${suffix}.png`;
     a.click();
   }
+
+  // ── Topbar quick actions ───────────────────────────────────────
+  $: characterAssets = assets.filter(a => a.type === 'character');
+  $: backgroundAssets = assets.filter(a => a.type === 'background');
+  let quickAssetSelection = '';
+
+  function quickToggleBgMove() {
+    if (!currentFrame || !currentFrame.background) return;
+    bgAdjustFrameId = bgAdjustFrameId === currentFrame.id ? null : currentFrame.id;
+  }
+
+  async function quickAddAsset(value: string) {
+    quickAssetSelection = '';
+    if (!currentFrame || !value) return;
+    const [kind, id] = value.split(':');
+    const asset = assets.find(a => a.id === id);
+    if (!asset || asset.images.length === 0) return;
+    if (kind === 'char') {
+      const newLayer: FrameLayer = {
+        id: crypto.randomUUID(),
+        assetId: asset.id,
+        imageId: asset.images[0].id,
+        x: 0, y: 0,
+      };
+      const updated: Frame = { ...currentFrame, layers: [...currentFrame.layers, newLayer] };
+      await saveFrame(updated);
+      frames = frames.map(f => f.id === updated.id ? updated : f);
+    } else if (kind === 'bg') {
+      const updated: Frame = {
+        ...currentFrame,
+        background: { assetId: asset.id, imageId: asset.images[0].id, offsetX: 0, offsetY: 0, mask: null },
+      };
+      await saveFrame(updated);
+      frames = frames.map(f => f.id === updated.id ? updated : f);
+    }
+  }
+
+  async function quickAddBubble() {
+    if (!currentFrame) return;
+    const bubble: SpeechBubble = {
+      id: crypto.randomUUID(),
+      text: 'Hello!',
+      x: 4, y: 4,
+      fontSize: 10,
+      tailX: 12, tailY: 30,
+    };
+    const updated: Frame = { ...currentFrame, bubbles: [...(currentFrame.bubbles ?? []), bubble] };
+    await saveFrame(updated);
+    frames = frames.map(f => f.id === updated.id ? updated : f);
+  }
 </script>
 
 {#if !currentProject}
@@ -403,6 +453,44 @@
       <button class="back-btn" on:click={closeProject} title="Projects">←</button>
       <span class="project-title">{currentProject.name}</span>
       <button class="add-btn" on:click={addFrame} title="Add frame">+ Frame</button>
+      <span class="qa-divider"></span>
+      <button
+        class="qa-btn"
+        class:active={bgAdjustFrameId !== null && bgAdjustFrameId === selectedFrameId}
+        on:click={quickToggleBgMove}
+        disabled={!currentFrame || !currentFrame.background}
+        title="Toggle background move mode for selected frame"
+      >✥</button>
+      <select
+        class="qa-select"
+        bind:value={quickAssetSelection}
+        on:change={() => quickAddAsset(quickAssetSelection)}
+        disabled={!currentFrame || (characterAssets.length === 0 && backgroundAssets.length === 0)}
+        title="Add asset to selected frame"
+      >
+        <option value="">⊕ Asset</option>
+        {#if characterAssets.length > 0}
+          <optgroup label="Characters">
+            {#each characterAssets as a (a.id)}
+              <option value="char:{a.id}">{a.name}</option>
+            {/each}
+          </optgroup>
+        {/if}
+        {#if backgroundAssets.length > 0}
+          <optgroup label="Backgrounds">
+            {#each backgroundAssets as a (a.id)}
+              <option value="bg:{a.id}">{a.name}</option>
+            {/each}
+          </optgroup>
+        {/if}
+      </select>
+      <button
+        class="qa-btn"
+        on:click={quickAddBubble}
+        disabled={!currentFrame}
+        title="Add speech bubble to selected frame"
+      >…</button>
+      <span class="qa-divider"></span>
       <select
         class="export-scale"
         bind:value={exportScale}
@@ -534,6 +622,14 @@
   .project-title { flex: 1; font-weight: 600; color: #e0e0f0; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .add-btn { background: #22223a; border-color: #4a4a6a; color: #c0c0e0; font-size: 0.78rem; }
   .add-btn:hover:not(:disabled) { background: #35356a; border-color: #7070cc; color: #fff; }
+  .qa-btn {
+    background: #22223a; border-color: #4a4a6a; color: #c0c0e0;
+    font-size: 0.95rem; padding: 2px 8px; min-width: 28px; line-height: 1;
+  }
+  .qa-btn:hover:not(:disabled) { background: #35356a; border-color: #7070cc; color: #fff; }
+  .qa-btn.active { background: #3a3a8a; border-color: #a0a0ff; color: #fff; }
+  .qa-select { font-size: 0.78rem; padding: 3px 6px; max-width: 110px; }
+  .qa-divider { width: 1px; align-self: stretch; background: #2a2a40; margin: 2px 2px; }
   .export-scale { font-size: 0.78rem; padding: 3px 6px; }
   .export-btn { background: #1e4a2e; border-color: #3a8a5a; color: #aef0c0; }
   .export-btn:hover:not(:disabled) { background: #2a6a3e; border-color: #5ab87a; }

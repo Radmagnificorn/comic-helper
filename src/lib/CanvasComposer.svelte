@@ -138,16 +138,40 @@
     imageCache.clear();
   });
 
-  // Re-render when frames or assets or adjust-mode changes
+  // Re-render when frames or assets or adjust-mode changes. Selection
+  // changes are applied incrementally below so they don't tear down nodes
+  // mid-interaction (which would kill an in-flight drag).
   $: if (layer) {
-    void frames; void assets; void selectedFrameId; void bgAdjustFrameId; void projectBgColor;
+    void frames; void assets; void bgAdjustFrameId; void projectBgColor;
     applyStageSize();
     renderAll();
+  }
+
+  // Apply selection visuals without rebuilding the scene.
+  $: if (layer) {
+    applySelectionVisuals(selectedFrameId);
   }
 
   // ── Rendering ────────────────────────────────────────────────
   /** Map frame.id → its Konva.Group (used for live drag updates) */
   const frameGroups = new Map<string, Konva.Group>();
+
+  /**
+   * Update the per-frame selection outline visibility and resize-handle fill
+   * without rebuilding the scene. Called whenever `selectedFrameId` changes
+   * so an in-progress drag isn't interrupted by a node teardown.
+   */
+  function applySelectionVisuals(selId: string | null) {
+    if (!layer) return;
+    for (const [id, group] of frameGroups) {
+      const isSel = id === selId;
+      const outline = group.findOne('.selection-outline') as Konva.Rect | undefined;
+      if (outline) outline.visible(isSel);
+      const handle = group.findOne('.resize-handle') as Konva.Rect | undefined;
+      if (handle) handle.fill(isSel ? '#5a5acc' : '#3a3a5a');
+    }
+    layer.batchDraw();
+  }
 
   async function renderAll() {
     if (!layer) return;
@@ -267,7 +291,10 @@
             ) },
           });
         });
-        kImg.on('click tap', () => openCharacterPicker(frame.id, fl.id, fl.assetId));
+        kImg.on('click tap', () => {
+          if (selectedFrameId !== frame.id) dispatch('select', { id: frame.id });
+          openCharacterPicker(frame.id, fl.id, fl.assetId);
+        });
         attachLongPress(kImg, frame.id, fl.id);
         group.add(kImg);
       }
@@ -284,14 +311,17 @@
         renderBubble(group, frame, bubble);
       }
 
-      // 4. Selection outline (drawn last so it's on top)
-      if (frame.id === selectedFrameId) {
+      // 4. Selection outline (drawn last so it's on top). Always added but
+      // toggled visible by applySelectionVisuals so selection changes don't
+      // require a full rebuild.
+      {
         const outline = new Konva.Rect({
           x: 0, y: 0, width: frame.width, height: frame.height,
           stroke: '#7070ff', strokeWidth: 1 / (displayScale * zoom),
           dash: [3 / (displayScale * zoom), 2 / (displayScale * zoom)],
           listening: false,
-          name: UI_NODE_NAME,
+          visible: frame.id === selectedFrameId,
+          name: `${UI_NODE_NAME} selection-outline`,
         });
         group.add(outline);
       }
@@ -305,7 +335,7 @@
         opacity: 0.85,
         draggable: true,
         listening: true,
-        name: UI_NODE_NAME,
+        name: `${UI_NODE_NAME} resize-handle`,
         // cursor handled below
       });
       // Lock X axis: only Y movement matters for resize
@@ -631,12 +661,16 @@
     });
     group.add(bGroup);
     attachBubbleLongPress(bGroup, frame.id, bubble.id);
+    bGroup.on('pointerdown', () => {
+      if (selectedFrameId !== frame.id) dispatch('select', { id: frame.id });
+    });
     let bubbleDragged = false;
     bGroup.on('dragstart', () => { bubbleDragged = true; });
     bGroup.on('click tap', () => {
       if (suppressNextClick) return;
       if (bubbleDragged) { bubbleDragged = false; return; }
       if (frame.id === bgAdjustFrameId) return;
+      if (selectedFrameId !== frame.id) dispatch('select', { id: frame.id });
       dispatch('editbubble', { frameId: frame.id, bubbleId: bubble.id });
     });
 
@@ -663,6 +697,7 @@
       };
     });
     tipHandle.on('dragmove', () => {
+      if (selectedFrameId !== frame.id) dispatch('select', { id: frame.id });
       tip.x = tipHandle.x() - bGroup.x();
       tip.y = tipHandle.y() - bGroup.y();
       base = updateBaseForTip(bgW, bgH, BUBBLE_RADIUS, tip, base);
@@ -701,6 +736,7 @@
     };
 
     node.on('pointerdown', (e: any) => {
+      if (selectedFrameId !== frameId) dispatch('select', { id: frameId });
       const ev = e.evt as PointerEvent;
       startX = ev.clientX;
       startY = ev.clientY;

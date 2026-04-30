@@ -7,7 +7,7 @@
 /** Padding (canvas px) between text and the bubble background edge. */
 export const BUBBLE_PAD = 3;
 /** Corner radius (canvas px) of the white bubble background rect. */
-export const BUBBLE_RADIUS = 4;
+export const BUBBLE_RADIUS = 5;
 /** Radius (canvas px) of the draggable tail-tip handle circle. */
 export const TAIL_HANDLE_R = 3;
 /**

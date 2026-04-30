@@ -130,12 +130,19 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
   ctx.translate(-minX, -minY);
 
   // Draw the bubble shape.
-  drawBubblePath(ctx, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y, base, !!flatTip);
+  // Translate by (0.5, 0.5) so the 1px stroke lands on whole pixel rows
+  // instead of straddling two rows at ~50% coverage each. Without this,
+  // the alpha-128 threshold below produces visibly asymmetric top vs bottom
+  // corners (one side keeps the half-coverage pixel, the other drops it).
+  ctx.save();
+  ctx.translate(0.5, 0.5);
+  drawBubblePath(ctx, bgW - 1, bgH - 1, BUBBLE_RADIUS, tip.x - 0.5, tip.y - 0.5, base, !!flatTip);
   ctx.fillStyle = '#ffffff';
   ctx.fill();
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 1;
   ctx.stroke();
+  ctx.restore();
 
   // Threshold the alpha channel to {0, 255} so rounded corners and diagonal
   // tail edges stay crisp when upscaled with nearest-neighbor.

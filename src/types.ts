@@ -66,6 +66,14 @@ export interface SpeechBubble {
    * inferred from the bubble edge nearest the tip. */
   tailX: number;
   tailY: number;
+  /**
+   * Tail base midpoint in canvas pixels (frame-relative). Lies on one of the
+   * bubble's edges. Persisted so that the base can lag the tip while dragging,
+   * allowing the tail to be angled. If omitted, callers should fall back to
+   * the natural projection of the tip onto the closest edge.
+   */
+  tailBaseX?: number;
+  tailBaseY?: number;
 }
 
 export interface Frame {

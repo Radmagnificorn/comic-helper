@@ -98,6 +98,18 @@
     const ok = confirm(`Delete library "${lib.name}" and all of its assets? This affects every project that uses it.`);
     if (ok) dispatch('deleteLibrary', { libraryId: lib.id });
   }
+
+  function confirmDeleteAsset(asset: Asset) {
+    const imgCount = asset.images.length;
+    const suffix = imgCount > 0 ? ` and its ${imgCount} image${imgCount === 1 ? '' : 's'}` : '';
+    const ok = confirm(`Delete asset "${asset.name}"${suffix}?`);
+    if (ok) dispatch('deleteAsset', { assetId: asset.id });
+  }
+
+  function confirmDeleteImage(assetId: string, img: { id: string; name: string }) {
+    const ok = confirm(`Delete image "${img.name}"?`);
+    if (ok) dispatch('deleteImage', { assetId, imageId: img.id });
+  }
 </script>
 
 <div class="asset-panel">
@@ -145,7 +157,7 @@
               </select>
             {/if}
             <button class="icon-btn danger"
-              on:click={() => dispatch('deleteAsset', { assetId: asset.id })}>✕</button>
+              on:click={() => confirmDeleteAsset(asset)}>✕</button>
           </div>
 
           {#if expandedId === asset.id}
@@ -154,7 +166,7 @@
                 <div class="thumb-wrap">
                   <img src={blobUrl(img.blob)} alt={img.name} class="thumb" />
                   <span class="thumb-label">{img.name}</span>
-                  <button class="icon-btn danger thumb-del" on:click={() => dispatch('deleteImage', { assetId: asset.id, imageId: img.id })}>✕</button>
+                  <button class="icon-btn danger thumb-del" on:click={() => confirmDeleteImage(asset.id, img)}>✕</button>
                 </div>
               {/each}
 
@@ -206,8 +218,8 @@
               <span class="asset-type-badge {asset.type}">{asset.type[0].toUpperCase()}</span>
               <span class="asset-name">{asset.name}</span>
               <span class="icon-btn danger" role="button" tabindex="0"
-                on:click|stopPropagation={() => dispatch('deleteAsset', { assetId: asset.id })}
-                on:keydown={e => e.key === 'Enter' && dispatch('deleteAsset', { assetId: asset.id })}>✕</span>
+                on:click|stopPropagation={() => confirmDeleteAsset(asset)}
+                on:keydown={e => e.key === 'Enter' && confirmDeleteAsset(asset)}>✕</span>
             </button>
 
             {#if expandedId === asset.id}
@@ -216,7 +228,7 @@
                   <div class="thumb-wrap">
                     <img src={blobUrl(img.blob)} alt={img.name} class="thumb" />
                     <span class="thumb-label">{img.name}</span>
-                    <button class="icon-btn danger thumb-del" on:click={() => dispatch('deleteImage', { assetId: asset.id, imageId: img.id })}>✕</button>
+                    <button class="icon-btn danger thumb-del" on:click={() => confirmDeleteImage(asset.id, img)}>✕</button>
                   </div>
                 {/each}
 

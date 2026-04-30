@@ -47,6 +47,8 @@ export interface BubbleRenderParams {
   tip: { x: number; y: number };
   /** Current tail base (may be null if tip is inside the rect). */
   base: { side: BubbleSide; bx: number; by: number } | null;
+  /** Render the tail as a flat-ended parallelogram instead of a point. */
+  flatTip?: boolean;
 }
 
 /**
@@ -88,7 +90,7 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
   offX: number;
   offY: number;
 } {
-  const { bubble, bgW, bgH, lines, tip, base } = params;
+  const { bubble, bgW, bgH, lines, tip, base, flatTip } = params;
 
   // Size the offscreen canvas to contain both the rect and the tail tip.
   const minX = Math.floor(Math.min(0, tip.x));
@@ -106,7 +108,7 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
   ctx.translate(-minX, -minY);
 
   // Draw the bubble shape.
-  drawBubblePath(ctx, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y, base);
+  drawBubblePath(ctx, bgW, bgH, BUBBLE_RADIUS, tip.x, tip.y, base, !!flatTip);
   ctx.fillStyle = '#ffffff';
   ctx.fill();
   ctx.strokeStyle = '#000000';

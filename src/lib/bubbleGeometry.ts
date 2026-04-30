@@ -30,7 +30,7 @@ export function naturalBase(
   if (insideRect) return null;
   const cx = w / 2, cy = h / 2;
   const dx = tx - cx, dy = ty - cy;
-  const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 8));
+  const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 5));
   const horiz = Math.abs(dx) * h > Math.abs(dy) * w;
   const side: BubbleSide = horiz
     ? (dx > 0 ? 'right' : 'left')
@@ -68,7 +68,7 @@ export function clampBase(
   w: number, h: number, r: number,
   side: BubbleSide, bx: number, by: number,
 ): { side: BubbleSide; bx: number; by: number } {
-  const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 8));
+  const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 5));
   if (side === 'top' || side === 'bottom') {
     const m = Math.max(r + baseW / 2, Math.min(w - r - baseW / 2, bx));
     return { side, bx: m, by: side === 'top' ? 0 : h };
@@ -122,9 +122,10 @@ export function drawBubblePath(
   w: number, h: number, r: number,
   tx: number, ty: number,
   forcedBase?: { side: BubbleSide; bx: number; by: number } | null,
+  flatTip: boolean = false,
 ) {
   const insideRect = tx >= 0 && tx <= w && ty >= 0 && ty <= h;
-  const baseW = Math.max(3, Math.min(Math.min(w, h) / 2, 8));
+  const baseW = flatTip ? 3 : Math.max(3, Math.min(Math.min(w, h) / 2, 5));
 
   let side: BubbleSide | null = null;
   let m = 0;
@@ -150,41 +151,54 @@ export function drawBubblePath(
     }
   }
 
+  /**
+   * Emit the tail vertices for the current side. With `flatTip`, the tail
+   * becomes a parallelogram (constant width strip) instead of converging to
+   * a single point — used when the bubble is connected to another bubble.
+   */
+  const drawTail = (
+    blX: number, blY: number, brX: number, brY: number,
+    bmX: number, bmY: number,
+  ) => {
+    ctx.lineTo(blX, blY);
+    if (flatTip) {
+      const dxL = blX - bmX, dyL = blY - bmY;
+      const dxR = brX - bmX, dyR = brY - bmY;
+      ctx.lineTo(tx + dxL, ty + dyL);
+      ctx.lineTo(tx + dxR, ty + dyR);
+    } else {
+      ctx.lineTo(tx, ty);
+    }
+    ctx.lineTo(brX, brY);
+  };
+
   ctx.beginPath();
   ctx.moveTo(r, 0);
 
   // Top edge
   if (side === 'top') {
-    ctx.lineTo(m - baseW / 2, 0);
-    ctx.lineTo(tx, ty);
-    ctx.lineTo(m + baseW / 2, 0);
+    drawTail(m - baseW / 2, 0, m + baseW / 2, 0, m, 0);
   }
   ctx.lineTo(w - r, 0);
   ctx.arcTo(w, 0, w, r, r);
 
   // Right edge
   if (side === 'right') {
-    ctx.lineTo(w, m - baseW / 2);
-    ctx.lineTo(tx, ty);
-    ctx.lineTo(w, m + baseW / 2);
+    drawTail(w, m - baseW / 2, w, m + baseW / 2, w, m);
   }
   ctx.lineTo(w, h - r);
   ctx.arcTo(w, h, w - r, h, r);
 
   // Bottom edge
   if (side === 'bottom') {
-    ctx.lineTo(m + baseW / 2, h);
-    ctx.lineTo(tx, ty);
-    ctx.lineTo(m - baseW / 2, h);
+    drawTail(m + baseW / 2, h, m - baseW / 2, h, m, h);
   }
   ctx.lineTo(r, h);
   ctx.arcTo(0, h, 0, h - r, r);
 
   // Left edge
   if (side === 'left') {
-    ctx.lineTo(0, m + baseW / 2);
-    ctx.lineTo(tx, ty);
-    ctx.lineTo(0, m - baseW / 2);
+    drawTail(0, m + baseW / 2, 0, m - baseW / 2, 0, m);
   }
   ctx.lineTo(0, r);
   ctx.arcTo(0, 0, r, 0, r);

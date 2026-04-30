@@ -539,6 +539,25 @@
 
   // ── Speech bubbles ───────────────────────────────────────────
 
+  /**
+   * Return the id of another bubble in the same frame whose background rect
+   * contains the given absolute (frame-relative) point, or null if none.
+   * Used to decide whether a bubble's tail should be rendered as a flat
+   * connector strip linking it to that other bubble.
+   */
+  function findConnectedBubbleId(
+    frame: Frame, selfId: string, ax: number, ay: number,
+  ): string | null {
+    for (const other of frame.bubbles ?? []) {
+      if (other.id === selfId) continue;
+      const { bgW, bgH } = measureBubble(other.text || ' ', other.fontSize);
+      if (ax >= other.x && ax <= other.x + bgW && ay >= other.y && ay <= other.y + bgH) {
+        return other.id;
+      }
+    }
+    return null;
+  }
+
   function renderBubble(group: Konva.Group, frame: Frame, bubble: SpeechBubble) {
     const { bgW, bgH, lines } = measureBubble(bubble.text || ' ', bubble.fontSize);
 
@@ -557,7 +576,13 @@
     })();
     if (base) base = clampBase(bgW, bgH, BUBBLE_RADIUS, base.side, base.bx, base.by);
 
-    let built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base });
+    // Track whether the tail tip currently overlaps another bubble's rect.
+    // While true, the tail is rendered as a flat-ended connector strip.
+    let connectedTo: string | null = findConnectedBubbleId(
+      frame, bubble.id, bubble.x + tip.x, bubble.y + tip.y,
+    );
+
+    let built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo });
     const kImg = new Konva.Image({
       image: built.canvas,
       x: built.offX,
@@ -589,12 +614,16 @@
     });
     bGroup.on('dragend', () => {
       const newX = Math.round(bGroup.x()), newY = Math.round(bGroup.y());
+      const tipAbsX = newX + Math.round(tip.x);
+      const tipAbsY = newY + Math.round(tip.y);
+      connectedTo = findConnectedBubbleId(frame, bubble.id, tipAbsX, tipAbsY);
       const updated: SpeechBubble = {
         ...bubble,
         x: newX, y: newY,
-        tailX: newX + Math.round(tip.x),
-        tailY: newY + Math.round(tip.y),
+        tailX: tipAbsX,
+        tailY: tipAbsY,
         ...(base ? { tailBaseX: newX + Math.round(base.bx), tailBaseY: newY + Math.round(base.by) } : {}),
+        ...(connectedTo ? { connectedToBubbleId: connectedTo } : { connectedToBubbleId: undefined }),
       };
       dispatch('change', {
         frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },
@@ -637,7 +666,10 @@
       tip.x = tipHandle.x() - bGroup.x();
       tip.y = tipHandle.y() - bGroup.y();
       base = updateBaseForTip(bgW, bgH, BUBBLE_RADIUS, tip, base);
-      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base });
+      connectedTo = findConnectedBubbleId(
+        frame, bubble.id, bGroup.x() + tip.x, bGroup.y() + tip.y,
+      );
+      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo });
       kImg.image(built.canvas);
       kImg.position({ x: built.offX, y: built.offY });
       kImg.size({ width: built.canvas.width, height: built.canvas.height });
@@ -651,6 +683,7 @@
         ...(base
           ? { tailBaseX: bGroup.x() + Math.round(base.bx), tailBaseY: bGroup.y() + Math.round(base.by) }
           : {}),
+        ...(connectedTo ? { connectedToBubbleId: connectedTo } : { connectedToBubbleId: undefined }),
       };
       dispatch('change', {
         frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },

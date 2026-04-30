@@ -80,6 +80,12 @@ export interface SpeechBubble {
    */
   tailBaseX?: number;
   tailBaseY?: number;
+  /**
+   * Optional id of another bubble that this bubble's tail tip overlaps. When
+   * set, the tail is rendered as a flat-ended connector strip (no point) so
+   * the two bubbles read as linked dialogue.
+   */
+  connectedToBubbleId?: string;
 }
 
 export interface Frame {

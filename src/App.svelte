@@ -519,6 +519,46 @@
     }
   }
 
+  async function handleMoveAssetToLibrary(e: CustomEvent<{ assetId: string; libraryId: string }>) {
+    if (!currentProject) return;
+    const { assetId, libraryId } = e.detail;
+    // Asset must currently be project-private.
+    const asset = projectAssets.find(a => a.id === assetId);
+    if (!asset) return;
+    const lib = libraries.find(l => l.id === libraryId);
+    if (!lib) return;
+    if (lib.assetIds.includes(assetId)) return;
+
+    // Detach from project.
+    const updatedProject: Project = {
+      ...currentProject,
+      assetIds: currentProject.assetIds.filter(i => i !== assetId),
+      updatedAt: Date.now(),
+    };
+    await saveProject(updatedProject);
+    setCurrentProject(updatedProject);
+    projectAssets = projectAssets.filter(a => a.id !== assetId);
+
+    // Attach to library.
+    const updatedLib: AssetLibrary = {
+      ...lib,
+      assetIds: [...lib.assetIds, assetId],
+      updatedAt: Date.now(),
+    };
+    await saveAssetLibrary(updatedLib);
+    libraries = libraries.map(l => l.id === libraryId ? updatedLib : l);
+
+    // If the destination library is attached to this project, reflect it
+    // in the loaded libraryAssets map so the moved asset shows up there
+    // immediately.
+    if ((updatedProject.libraryIds ?? []).includes(libraryId)) {
+      libraryAssets = {
+        ...libraryAssets,
+        [libraryId]: [...(libraryAssets[libraryId] ?? []), asset],
+      };
+    }
+  }
+
   // ── Asset library ops ──────────────────────────────────────────
   async function handleCreateLibrary(e: CustomEvent<{ name: string }>) {
     if (!currentProject) return;
@@ -755,6 +795,7 @@
                 on:attachLibrary={handleAttachLibrary}
                 on:detachLibrary={handleDetachLibrary}
                 on:deleteLibrary={handleDeleteLibrary}
+                on:moveAssetToLibrary={handleMoveAssetToLibrary}
               />
             </div>
           </section>
@@ -859,6 +900,7 @@
               on:attachLibrary={handleAttachLibrary}
               on:detachLibrary={handleDetachLibrary}
               on:deleteLibrary={handleDeleteLibrary}
+              on:moveAssetToLibrary={handleMoveAssetToLibrary}
             />
           {/if}
         </div>

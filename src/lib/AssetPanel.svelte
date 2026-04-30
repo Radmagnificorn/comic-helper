@@ -21,7 +21,19 @@
     attachLibrary: { libraryId: string };
     detachLibrary: { libraryId: string };
     deleteLibrary: { libraryId: string };
+    moveAssetToLibrary: { assetId: string; libraryId: string };
   }>();
+
+  /** All libraries the asset can be moved into (attached + available). */
+  $: allLibraries = [...attachedLibraries, ...availableLibraries];
+
+  function handleMoveToLibrary(assetId: string, e: Event) {
+    const sel = e.target as HTMLSelectElement;
+    const libraryId = sel.value;
+    sel.value = '';
+    if (!libraryId) return;
+    dispatch('moveAssetToLibrary', { assetId, libraryId });
+  }
 
   // Per-section "add asset" form state, keyed by container id
   // ('__project' for project-private, libraryId otherwise).
@@ -100,13 +112,26 @@
     <ul class="asset-list">
       {#each projectAssets as asset (asset.id)}
         <li class="asset-item">
-          <button class="asset-header" on:click={() => expandedId = expandedId === asset.id ? null : asset.id}>
-            <span class="asset-type-badge {asset.type}">{asset.type[0].toUpperCase()}</span>
-            <span class="asset-name">{asset.name}</span>
-            <span class="icon-btn danger" role="button" tabindex="0"
-              on:click|stopPropagation={() => dispatch('deleteAsset', { assetId: asset.id })}
-              on:keydown={e => e.key === 'Enter' && dispatch('deleteAsset', { assetId: asset.id })}>✕</span>
-          </button>
+          <div class="asset-header-row">
+            <button class="asset-header" on:click={() => expandedId = expandedId === asset.id ? null : asset.id}>
+              <span class="asset-type-badge {asset.type}">{asset.type[0].toUpperCase()}</span>
+              <span class="asset-name">{asset.name}</span>
+            </button>
+            {#if allLibraries.length > 0}
+              <select
+                class="move-select"
+                title="Move asset to a shared library"
+                on:change={e => handleMoveToLibrary(asset.id, e)}
+              >
+                <option value="">→ Library…</option>
+                {#each allLibraries as targetLib (targetLib.id)}
+                  <option value={targetLib.id}>{targetLib.name}</option>
+                {/each}
+              </select>
+            {/if}
+            <button class="icon-btn danger"
+              on:click={() => dispatch('deleteAsset', { assetId: asset.id })}>✕</button>
+          </div>
 
           {#if expandedId === asset.id}
             <div class="asset-images">
@@ -240,12 +265,14 @@
 
   .asset-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   .asset-item { background: #22223a; border-radius: 4px; overflow: hidden; }
-  .asset-header { display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: pointer; user-select: none; width: 100%; background: none; border: none; color: #e0e0f0; text-align: left; }
+  .asset-header-row { display: flex; align-items: center; gap: 4px; padding-right: 6px; }
+  .asset-header { display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: pointer; user-select: none; flex: 1; min-width: 0; background: none; border: none; color: #e0e0f0; text-align: left; }
   .asset-header:hover { background: #2e2e4a; }
   .asset-type-badge { font-size: 0.65rem; font-weight: bold; padding: 1px 4px; border-radius: 3px; }
   .asset-type-badge.character { background: #2a4a7a; color: #b0d4f0; }
   .asset-type-badge.background { background: #2a5a3a; color: #a0d4b0; }
   .asset-name { flex: 1; font-size: 0.85rem; color: #e0e0f0; }
+  .move-select { font-size: 0.68rem; padding: 1px 2px; max-width: 110px; background: #1a1a2e; color: #c0c0e0; border: 1px solid #4a4a6a; border-radius: 3px; }
   .icon-btn { background: none; border: none; cursor: pointer; padding: 2px 4px; border-radius: 3px; color: #7070a0; }
   .icon-btn:hover { color: #c0c0e0; }
   .icon-btn.danger:hover { background: #7a2020; color: #fff; }

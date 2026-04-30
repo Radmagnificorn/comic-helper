@@ -214,8 +214,27 @@
 
   async function handleFrameChange(e: CustomEvent<{ frame: Frame }>) {
     const updated = e.detail.frame;
+    const prev = frames.find(f => f.id === updated.id);
     await saveFrame(updated);
     frames = frames.map(f => f.id === updated.id ? updated : f);
+    // Clean up any ephemeral one-off assets whose layer was just removed.
+    if (prev && currentProject) {
+      const removedAssetIds = prev.layers
+        .filter(l => !updated.layers.some(u => u.id === l.id))
+        .map(l => l.assetId);
+      for (const aid of removedAssetIds) {
+        const asset = projectAssets.find(a => a.id === aid);
+        if (!asset?.ephemeral) continue;
+        // Should be unused now; double-check across all frames just in case.
+        const stillUsed = frames.some(fr => fr.layers.some(l => l.assetId === aid));
+        if (stillUsed) continue;
+        await deleteAsset(aid);
+        projectAssets = projectAssets.filter(a => a.id !== aid);
+        const proj: Project = { ...currentProject, assetIds: currentProject.assetIds.filter(i => i !== aid), updatedAt: Date.now() };
+        await saveProject(proj);
+        setCurrentProject(proj);
+      }
+    }
   }
 
   async function handleResizeFrame(e: CustomEvent<{ id: string; height: number }>) {
@@ -412,12 +431,46 @@
   async function quickAddCharacter(assetId: string) {
     quickAssetSelection = '';
     if (!currentFrame || !assetId) return;
+    if (assetId === '__upload__') {
+      quickUploadInput?.click();
+      return;
+    }
     const asset = assets.find(a => a.id === assetId);
     if (!asset || asset.type !== 'character' || asset.images.length === 0) return;
     const newLayer: FrameLayer = {
       id: crypto.randomUUID(),
       assetId: asset.id,
       imageId: asset.images[0].id,
+      x: 0, y: 0,
+    };
+    const updated: Frame = { ...currentFrame, layers: [...currentFrame.layers, newLayer] };
+    await saveFrame(updated);
+    frames = frames.map(f => f.id === updated.id ? updated : f);
+  }
+
+  let quickUploadInput: HTMLInputElement | null = null;
+  async function onQuickUploadFile(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || !currentFrame || !currentProject) return;
+    const assetId = crypto.randomUUID();
+    const imageId = crypto.randomUUID();
+    const asset: Asset = {
+      id: assetId,
+      name: file.name.replace(/\.[^.]+$/, '') || 'One-off',
+      type: 'character',
+      images: [{ id: imageId, name: 'image', blob: file }],
+      ephemeral: true,
+    };
+    await saveAsset(asset);
+    projectAssets = [...projectAssets, asset];
+    const proj: Project = { ...currentProject, assetIds: [...currentProject.assetIds, assetId], updatedAt: Date.now() };
+    await saveProject(proj);
+    setCurrentProject(proj);
+    const newLayer: FrameLayer = {
+      id: crypto.randomUUID(),
+      assetId, imageId,
       x: 0, y: 0,
     };
     const updated: Frame = { ...currentFrame, layers: [...currentFrame.layers, newLayer] };
@@ -465,14 +518,22 @@
         class="qa-select"
         bind:value={quickAssetSelection}
         on:change={() => quickAddCharacter(quickAssetSelection)}
-        disabled={!currentFrame || characterAssets.length === 0}
+        disabled={!currentFrame}
         title="Add character to selected frame"
       >
         <option value="">⊕ Character</option>
+        <option value="__upload__">↑ Upload one-off…</option>
         {#each characterAssets as a (a.id)}
           <option value={a.id}>{a.name}</option>
         {/each}
       </select>
+      <input
+        type="file"
+        accept="image/*"
+        bind:this={quickUploadInput}
+        on:change={onQuickUploadFile}
+        style="display: none;"
+      />
       <button
         class="qa-btn"
         on:click={quickAddBubble}

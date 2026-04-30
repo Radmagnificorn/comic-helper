@@ -11,6 +11,12 @@ export interface Asset {
   name: string;
   type: AssetType;
   images: AssetImage[];
+  /**
+   * One-off asset created via the canvas quick-add. Always lives in the
+   * project's private asset list. When the layer that uses it is removed,
+   * the asset (and its images) is deleted from the project too.
+   */
+  ephemeral?: boolean;
 }
 
 /** A character placed on a frame */

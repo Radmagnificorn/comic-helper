@@ -127,6 +127,7 @@
     projectAssets = loadedProjectAssets;
     libraryAssets = Object.fromEntries(attachedLibIds.map((id, i) => [id, loadedLibAssets[i]]));
     selectedFrameId = frames[0]?.id ?? null;
+    clearHistory();
   }
 
   async function createProject(e: CustomEvent<{ name: string; canvasWidth: number; bgColor: string }>) {
@@ -149,6 +150,7 @@
     projectAssets = [];
     libraryAssets = {};
     selectedFrameId = null;
+    clearHistory();
   }
 
   /**
@@ -163,6 +165,146 @@
   function setCurrentProject(updated: Project) {
     currentProject = updated;
     projects = projects.map(p => p.id === updated.id ? updated : p);
+  }
+
+  // ── Undo / redo ────────────────────────────────────────────────
+  /**
+   * Snapshot of all per-project state that user actions mutate. Library
+   * assets and the project list itself are not tracked because they aren't
+   * editable from the canvas/inspector quick-actions.
+   */
+  type HistorySnapshot = {
+    frames: Frame[];
+    frameIds: string[];
+    assetIds: string[];
+    /** Project-private assets including image blobs, so ephemeral one-off
+     * uploads can be re-saved to IDB on undo. */
+    projectAssets: Asset[];
+    selectedFrameId: string | null;
+  };
+  const HISTORY_LIMIT = 50;
+  let undoStack: HistorySnapshot[] = [];
+  let redoStack: HistorySnapshot[] = [];
+  /** Suppresses ephemeral-asset auto-cleanup in handleFrameChange while we
+   * are replaying a snapshot (assets are reconciled by applySnapshot). */
+  let restoringHistory = false;
+  $: canUndo = undoStack.length > 0;
+  $: canRedo = redoStack.length > 0;
+
+  function snapshotState(): HistorySnapshot {
+    return {
+      // Deep-clone via JSON so future mutations to `frames` don't reach back
+      // into the snapshot. Frame contents are pure JSON.
+      frames: JSON.parse(JSON.stringify(frames)),
+      frameIds: currentProject ? [...currentProject.frameIds] : [],
+      assetIds: currentProject ? [...currentProject.assetIds] : [],
+      // Asset.images carry Blob references — keep them by-reference so the
+      // raw bytes survive a deleteAsset round-trip and can be re-saved.
+      projectAssets: projectAssets.map(a => ({ ...a, images: [...a.images] })),
+      selectedFrameId,
+    };
+  }
+
+  function pushHistory() {
+    if (!currentProject) return;
+    const snap = snapshotState();
+    undoStack = [...undoStack, snap].slice(-HISTORY_LIMIT);
+    redoStack = [];
+  }
+
+  async function applySnapshot(s: HistorySnapshot) {
+    if (!currentProject) return;
+    restoringHistory = true;
+    try {
+      // Frames: delete removed, save (re-)added/changed.
+      const newFrameIds = new Set(s.frames.map(f => f.id));
+      for (const f of frames) {
+        if (!newFrameIds.has(f.id)) await deleteFrame(f.id);
+      }
+      for (const f of s.frames) await saveFrame(f);
+      frames = s.frames;
+
+      // Project-private assets: re-save any that the snapshot has but we
+      // don't (resurrects ephemeral uploads); delete any that are present
+      // now but weren't in the snapshot (rolls back a fresh upload).
+      const currentAssetIds = new Set(projectAssets.map(a => a.id));
+      const snapAssetIds = new Set(s.projectAssets.map(a => a.id));
+      for (const a of s.projectAssets) {
+        if (!currentAssetIds.has(a.id)) await saveAsset(a);
+      }
+      for (const a of projectAssets) {
+        if (!snapAssetIds.has(a.id)) await deleteAsset(a.id);
+      }
+      projectAssets = s.projectAssets;
+
+      // Project frameIds / assetIds.
+      const sameFrameIds =
+        currentProject.frameIds.length === s.frameIds.length &&
+        currentProject.frameIds.every((id, i) => id === s.frameIds[i]);
+      const sameAssetIds =
+        currentProject.assetIds.length === s.assetIds.length &&
+        currentProject.assetIds.every((id, i) => id === s.assetIds[i]);
+      if (!sameFrameIds || !sameAssetIds) {
+        const updated: Project = {
+          ...currentProject,
+          frameIds: [...s.frameIds],
+          assetIds: [...s.assetIds],
+          updatedAt: Date.now(),
+        };
+        await saveProject(updated);
+        setCurrentProject(updated);
+      }
+
+      // Restore selection if the previously-selected frame still exists.
+      if (s.selectedFrameId && newFrameIds.has(s.selectedFrameId)) {
+        selectedFrameId = s.selectedFrameId;
+      } else if (selectedFrameId && !newFrameIds.has(selectedFrameId)) {
+        selectedFrameId = s.frames[0]?.id ?? null;
+      }
+      // Background-adjust mode is transient UI state, not persisted history.
+      if (bgAdjustFrameId && !newFrameIds.has(bgAdjustFrameId)) {
+        bgAdjustFrameId = null;
+      }
+    } finally {
+      restoringHistory = false;
+    }
+  }
+
+  async function undo() {
+    if (!undoStack.length) return;
+    const prev = undoStack[undoStack.length - 1];
+    redoStack = [...redoStack, snapshotState()];
+    undoStack = undoStack.slice(0, -1);
+    await applySnapshot(prev);
+  }
+
+  async function redo() {
+    if (!redoStack.length) return;
+    const next = redoStack[redoStack.length - 1];
+    undoStack = [...undoStack, snapshotState()];
+    redoStack = redoStack.slice(0, -1);
+    await applySnapshot(next);
+  }
+
+  function clearHistory() {
+    undoStack = [];
+    redoStack = [];
+  }
+
+  function onWindowKeydown(e: KeyboardEvent) {
+    // Ignore when typing in form fields so it doesn't fight native undo.
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const key = e.key.toLowerCase();
+    if (key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      undo();
+    } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+      e.preventDefault();
+      redo();
+    }
   }
 
   // ── Frame ops ──────────────────────────────────────────────────
@@ -186,6 +328,7 @@
 
   async function handleDeleteFrame(e: CustomEvent<{ id: string }>) {
     if (!currentProject) return;
+    pushHistory();
     const id = e.detail.id;
     await deleteFrame(id);
     frames = frames.filter(f => f.id !== id);
@@ -197,6 +340,7 @@
 
   async function handleDuplicateFrame(e: CustomEvent<{ id: string }>) {
     if (!currentProject) return;
+    pushHistory();
     const id = e.detail.id;
     const idx = frames.findIndex(f => f.id === id);
     if (idx < 0) return;
@@ -225,6 +369,7 @@
     if (idx < 0) return;
     const newIdx = direction === 'up' ? idx - 1 : idx + 1;
     if (newIdx < 0 || newIdx >= frames.length) return;
+    pushHistory();
     const arr = [...frames];
     [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
     frames = arr;
@@ -236,10 +381,11 @@
   async function handleFrameChange(e: CustomEvent<{ frame: Frame }>) {
     const updated = e.detail.frame;
     const prev = frames.find(f => f.id === updated.id);
+    if (!restoringHistory) pushHistory();
     await saveFrame(updated);
     frames = frames.map(f => f.id === updated.id ? updated : f);
     // Clean up any ephemeral one-off assets whose layer was just removed.
-    if (prev && currentProject) {
+    if (!restoringHistory && prev && currentProject) {
       const removedAssetIds = prev.layers
         .filter(l => !updated.layers.some(u => u.id === l.id))
         .map(l => l.assetId);
@@ -261,6 +407,7 @@
   async function handleResizeFrame(e: CustomEvent<{ id: string; height: number }>) {
     const frame = frames.find(f => f.id === e.detail.id);
     if (!frame) return;
+    pushHistory();
     const updated: Frame = { ...frame, height: e.detail.height };
     await saveFrame(updated);
     frames = frames.map(f => f.id === updated.id ? updated : f);
@@ -450,6 +597,7 @@
     }
     const asset = assets.find(a => a.id === assetId);
     if (!asset || asset.type !== 'character' || asset.images.length === 0) return;
+    pushHistory();
     const newLayer: FrameLayer = {
       id: crypto.randomUUID(),
       assetId: asset.id,
@@ -467,6 +615,7 @@
     const file = input.files?.[0];
     input.value = '';
     if (!file || !currentFrame || !currentProject) return;
+    pushHistory();
     const assetId = crypto.randomUUID();
     const imageId = crypto.randomUUID();
     const asset: Asset = {
@@ -493,6 +642,7 @@
 
   async function quickAddBubble() {
     if (!currentFrame) return;
+    pushHistory();
     const bubble: SpeechBubble = {
       id: crypto.randomUUID(),
       text: 'Hello!',
@@ -505,6 +655,8 @@
     frames = frames.map(f => f.id === updated.id ? updated : f);
   }
 </script>
+
+<svelte:window on:keydown={onWindowKeydown} />
 
 {#if !currentProject}
   <ProjectScreen
@@ -528,13 +680,13 @@
         title="Toggle background move mode for selected frame"
       >✥</button>
       <select
-        class="qa-select"
+        class="qa-select qa-select-icon"
         bind:value={quickAssetSelection}
         on:change={() => quickAddCharacter(quickAssetSelection)}
         disabled={!currentFrame}
         title="Add character to selected frame"
       >
-        <option value="">⊕ Character</option>
+        <option value="">⊝</option>
         <option value="__upload__">↑ Upload one-off…</option>
         {#each characterAssets as a (a.id)}
           <option value={a.id}>{a.name}</option>
@@ -646,6 +798,18 @@
     {/if}
 
     <nav class="tabbar">
+      <button
+        class="tab tab-aux"
+        on:click={undo}
+        disabled={!canUndo}
+        title="Undo (Ctrl+Z)"
+      ><span class="tab-icon">↶</span><span class="tab-label">Undo</span></button>
+      <button
+        class="tab tab-aux"
+        on:click={redo}
+        disabled={!canRedo}
+        title="Redo (Ctrl+Shift+Z)"
+      ><span class="tab-icon">↷</span><span class="tab-label">Redo</span></button>
       <button class="tab" class:active={activeDrawer === 'inspector'} on:click={() => toggleDrawer('inspector')}>
         <span class="tab-icon">✎</span><span class="tab-label">Frame</span>
       </button>
@@ -696,6 +860,20 @@
   .qa-btn:hover:not(:disabled) { background: #35356a; border-color: #7070cc; color: #fff; }
   .qa-btn.active { background: #3a3a8a; border-color: #a0a0ff; color: #fff; }
   .qa-select { font-size: 0.78rem; padding: 3px 6px; max-width: 110px; }
+  .qa-select.qa-select-icon {
+    /* Show only the icon (the empty-value option text "⊕"). The native
+       dropdown arrow is hidden so the trigger reads as a single glyph. */
+    width: 30px;
+    max-width: 30px;
+    padding: 3px 4px;
+    text-align: center;
+    text-align-last: center;
+    background-image: none;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+  }
+  .qa-select.qa-select-icon::-ms-expand { display: none; }
   .qa-divider { width: 1px; align-self: stretch; background: #2a2a40; margin: 2px 2px; }
   .export-scale { font-size: 0.78rem; padding: 3px 6px; }
   .export-btn { background: #1e4a2e; border-color: #3a8a5a; color: #aef0c0; }
@@ -738,6 +916,8 @@
   .tab:hover:not(:disabled) { background: #1e1e35; color: #c0c0e0; border-color: transparent; }
   .tab.active { color: #a0a0ff; background: #1a1a35; }
   .tab.active::before { content: ''; position: absolute; }
+  .tab.tab-aux { color: #8a8aaa; }
+  .tab.tab-aux:disabled { color: #4a4a6a; opacity: 0.55; }
   .tab-icon { font-size: 1.1rem; line-height: 1; }
   .tab-label { font-size: 0.7rem; letter-spacing: 0.02em; }
 

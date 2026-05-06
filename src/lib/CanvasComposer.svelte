@@ -4,7 +4,7 @@
   Renders ALL frames in a single Konva stage, vertically stacked with a small
   gutter between them. Supports:
     - mouse wheel = scroll, ctrl+wheel = zoom (centered on cursor)
-    - two-finger pinch on touch = zoom + pan together
+    - two-finger pinch on touch = zoom centered on midpoint + simultaneous pan (drag)
     - middle-mouse drag = pan
     - click on a frame body = select that frame
     - drag the bottom edge of a frame = resize its height (frames below shift)
@@ -1204,32 +1204,68 @@
       setZoom(zoom * factor, e.clientX, e.clientY);
     }, { passive: false });
 
-    // Touch pinch zoom (two-finger). Pan happens naturally via container scrolling.
+    // Touch pinch-zoom + two-finger pan.
+    // On each touchmove we compute both the scale change (pinch) and the
+    // midpoint translation (pan) and apply them together.
     let pinchStartDist = 0;
     let pinchStartZoom = 1;
     let pinchAnchor: { x: number; y: number } | null = null;
+    let pinchLastMid: { x: number; y: number } | null = null;
 
     viewport.addEventListener('touchstart', (e: TouchEvent) => {
       if (e.touches.length === 2) {
+        // Prevent the browser from starting its own native pan/zoom gesture
+        // so it doesn't fight with our manual scroll + zoom handling below.
+        e.preventDefault();
         const t1 = e.touches[0], t2 = e.touches[1];
         pinchStartDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
         pinchStartZoom = zoom;
-        pinchAnchor = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+        const mid = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+        pinchAnchor = mid;
+        pinchLastMid = { ...mid };
       }
-    }, { passive: true });
+    }, { passive: false }); // non-passive so preventDefault() is allowed
 
     viewport.addEventListener('touchmove', (e: TouchEvent) => {
-      if (e.touches.length === 2 && pinchStartDist > 0 && pinchAnchor) {
+      if (e.touches.length === 2 && pinchStartDist > 0 && pinchAnchor && pinchLastMid) {
         e.preventDefault();
         const t1 = e.touches[0], t2 = e.touches[1];
         const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-        setZoom(pinchStartZoom * (dist / pinchStartDist), pinchAnchor.x, pinchAnchor.y);
+        const mid = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+
+        // Pan delta since last frame.
+        const dx = mid.x - pinchLastMid.x;
+        const dy = mid.y - pinchLastMid.y;
+        pinchLastMid = mid;
+
+        const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchStartZoom * (dist / pinchStartDist)));
+
+        // Compute the scroll position that (a) keeps pinchAnchor fixed on
+        // screen after the zoom change and (b) applies the pan delta.
+        // We do this inline rather than calling setZoom() so that both zoom
+        // and pan land in the same tick().then() — if setZoom() were used its
+        // async tick would overwrite the pan that we'd apply synchronously.
+        const rect = viewport.getBoundingClientRect();
+        const anchorLocalX = pinchAnchor.x - rect.left + viewport.scrollLeft;
+        const anchorLocalY = pinchAnchor.y - rect.top + viewport.scrollTop;
+        const ratio = newZoom / zoom;
+        const sl = Math.max(0, anchorLocalX * ratio - (pinchAnchor.x - rect.left) - dx);
+        const st = Math.max(0, anchorLocalY * ratio - (pinchAnchor.y - rect.top) - dy);
+
+        zoom = newZoom;
+        applyStageSize();
+        renderAll();
+        tick().then(() => {
+          viewport.scrollLeft = sl;
+          viewport.scrollTop = st;
+        });
       }
     }, { passive: false });
 
     viewport.addEventListener('touchend', () => {
       pinchStartDist = 0;
       pinchAnchor = null;
+      pinchLastMid = null;
     });
   }
 

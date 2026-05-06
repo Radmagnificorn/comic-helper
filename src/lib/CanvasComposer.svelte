@@ -812,7 +812,7 @@
   ): string | null {
     for (const other of frame.bubbles ?? []) {
       if (other.id === selfId) continue;
-      const { bgW, bgH } = measureBubble(other.text || ' ', other.fontSize);
+      const { bgW, bgH } = measureBubble(other.text || ' ', other.fontSize, other.width);
       if (ax >= other.x && ax <= other.x + bgW && ay >= other.y && ay <= other.y + bgH) {
         return other.id;
       }
@@ -821,7 +821,10 @@
   }
 
   function renderBubble(group: Konva.Group, frame: Frame, bubble: SpeechBubble) {
-    const { bgW, bgH, lines } = measureBubble(bubble.text || ' ', bubble.fontSize);
+    let { bgW, bgH, lines } = measureBubble(bubble.text || ' ', bubble.fontSize, bubble.width);
+    const W_HANDLE_W = 3;  // canvas px — width of the right-edge resize handle
+    const W_HANDLE_H = 10; // canvas px — height of the right-edge resize handle
+    const MIN_BUBBLE_W = BUBBLE_PAD * 2 + 10; // minimum allowed bgW
 
     // Mutable tail tip in bubble-local coords.
     const tip = { x: bubble.tailX - bubble.x, y: bubble.tailY - bubble.y };
@@ -873,6 +876,7 @@
     });
     bGroup.on('dragmove', () => {
       tipHandle.position({ x: bGroup.x() + tip.x, y: bGroup.y() + tip.y });
+      widthHandle.position({ x: bGroup.x() + bgW, y: bGroup.y() + bgH / 2 - W_HANDLE_H / 2 });
     });
     bGroup.on('dragend', () => {
       const newX = Math.round(bGroup.x()), newY = Math.round(bGroup.y());
@@ -884,6 +888,7 @@
         x: newX, y: newY,
         tailX: tipAbsX,
         tailY: tipAbsY,
+        ...(bubble.width !== undefined ? { width: bubble.width } : {}),
         ...(base ? { tailBaseX: newX + Math.round(base.bx), tailBaseY: newY + Math.round(base.by) } : {}),
         ...(connectedTo ? { connectedToBubbleId: connectedTo } : { connectedToBubbleId: undefined }),
       };
@@ -947,6 +952,7 @@
         ...bubble,
         tailX: Math.round(tipHandle.x()),
         tailY: Math.round(tipHandle.y()),
+        ...(bubble.width !== undefined ? { width: bubble.width } : {}),
         ...(base
           ? { tailBaseX: bGroup.x() + Math.round(base.bx), tailBaseY: bGroup.y() + Math.round(base.by) }
           : {}),
@@ -957,6 +963,58 @@
       });
     });
     group.add(tipHandle);
+
+    // ── Width resize handle (right edge of bubble) ──────────────────────
+    const widthHandle = new Konva.Rect({
+      x: bubble.x + bgW,
+      y: bubble.y + bgH / 2 - W_HANDLE_H / 2,
+      width: W_HANDLE_W,
+      height: W_HANDLE_H,
+      fill: '#7070ff',
+      stroke: '#ffffff',
+      strokeWidth: 0.5,
+      draggable: frame.id !== bgAdjustFrameId,
+      listening: frame.id !== bgAdjustFrameId,
+      name: UI_NODE_NAME,
+    });
+    widthHandle.dragBoundFunc((pos) => {
+      const groupAbs = group.getAbsolutePosition();
+      const scale = stage.scaleX();
+      const localX = (pos.x - groupAbs.x) / scale;
+      const clampedX = Math.max(bGroup.x() + MIN_BUBBLE_W, Math.min(frame.width, localX));
+      return {
+        x: groupAbs.x + clampedX * scale,
+        y: widthHandle.getAbsolutePosition().y, // lock Y
+      };
+    });
+    widthHandle.on('dragmove', () => {
+      const newBgW = Math.max(MIN_BUBBLE_W, Math.round(widthHandle.x() - bGroup.x()));
+      const remeasured = measureBubble(bubble.text || ' ', bubble.fontSize, newBgW);
+      bgW = remeasured.bgW;
+      bgH = remeasured.bgH;
+      lines = remeasured.lines;
+      if (base) base = clampBase(bgW, bgH, BUBBLE_RADIUS, base.side, base.bx, base.by);
+      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor });
+      kImg.image(built.canvas);
+      kImg.position({ x: built.offX, y: built.offY });
+      kImg.size({ width: built.canvas.width, height: built.canvas.height });
+      widthHandle.y(bGroup.y() + bgH / 2 - W_HANDLE_H / 2);
+      layer.batchDraw();
+    });
+    widthHandle.on('dragend', () => {
+      const finalBgW = Math.max(MIN_BUBBLE_W, Math.round(widthHandle.x() - bGroup.x()));
+      const updated: SpeechBubble = {
+        ...bubble,
+        width: finalBgW,
+        ...(base
+          ? { tailBaseX: bGroup.x() + Math.round(base.bx), tailBaseY: bGroup.y() + Math.round(base.by) }
+          : {}),
+      };
+      dispatch('change', {
+        frame: { ...frame, bubbles: (frame.bubbles ?? []).map(b => b.id === bubble.id ? updated : b) },
+      });
+    });
+    group.add(widthHandle);
   }
 
   function attachLongPress(node: Konva.Image, frameId: string, layerId: string) {

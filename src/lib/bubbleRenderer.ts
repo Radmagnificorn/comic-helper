@@ -76,16 +76,50 @@ export interface BubbleRenderParams {
  * Measure a bubble's text and return the background rect dimensions.
  * Call this once when first creating a bubble so `buildBubbleCanvas` has
  * consistent bgW/bgH.
+ *
+ * When `maxWidth` is provided the text is word-wrapped to fit within that
+ * width and `bgW` is fixed to `maxWidth`. Otherwise the bubble auto-sizes
+ * to the widest line of text.
  */
 export function measureBubble(
   text: string,
   fontSize: number,
+  maxWidth?: number,
 ): { bgW: number; bgH: number; lines: string[] } {
-  const lines = text.split('\n');
   const lineHeight = fontSize; // matches Konva.Text lineHeight 1.0
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d')!;
   ctx.font = `${fontSize}px "${BUBBLE_FONT}"`;
+
+  if (maxWidth !== undefined) {
+    const availTextW = Math.max(1, maxWidth - BUBBLE_PAD * 2);
+    const inputLines = text.split('\n');
+    const wrapped: string[] = [];
+    for (const inputLine of inputLines) {
+      if (!inputLine) { wrapped.push(''); continue; }
+      const words = inputLine.split(' ');
+      let current = '';
+      for (const word of words) {
+        const test = current ? current + ' ' + word : word;
+        if (ctx.measureText(test).width <= availTextW) {
+          current = test;
+        } else {
+          if (current) wrapped.push(current);
+          current = word; // long word: allow overflow rather than infinite loop
+        }
+      }
+      if (current) wrapped.push(current);
+    }
+    const finalLines = wrapped.length ? wrapped : [''];
+    return {
+      bgW: maxWidth,
+      bgH: Math.ceil(finalLines.length * lineHeight) + BUBBLE_PAD * 2,
+      lines: finalLines,
+    };
+  }
+
+  // Auto-size: fit to text.
+  const lines = text.split('\n');
   const tw = Math.ceil(Math.max(1, ...lines.map(l => ctx.measureText(l).width)));
   const th = Math.ceil(lines.length * lineHeight);
   return {

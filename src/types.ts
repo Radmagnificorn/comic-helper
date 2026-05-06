@@ -77,6 +77,12 @@ export interface SpeechBubble {
   y: number;
   /** Font size in canvas pixels */
   fontSize: number;
+  /**
+   * Fixed width of the bubble background rect in canvas pixels.
+   * When set, text is word-wrapped to fill this width.
+   * When absent, the bubble auto-sizes to the measured text width.
+   */
+  width?: number;
   /** Tail tip position in canvas pixels (frame-relative). The tail base is
    * inferred from the bubble edge nearest the tip. */
   tailX: number;

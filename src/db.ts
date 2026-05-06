@@ -156,6 +156,65 @@ export async function deleteAsset(assetId: string): Promise<void> {
 }
 
 // ── Asset libraries ─────────────────────────────────────────────
+// ── Bulk reads (used by export/backup) ─────────────────────────
+
+export async function getAllFrames(): Promise<Frame[]> {
+  return (await db()).getAll('frames');
+}
+
+/** Returns asset metadata rows (without image blobs). */
+export async function getAllAssetMetas(): Promise<Omit<Asset, 'images'>[]> {
+  return (await db()).getAll('assets');
+}
+
+export async function getAllAssetImages(): Promise<{ id: string; assetId: string; name: string; blob: Blob }[]> {
+  return (await db()).getAll('assetImages');
+}
+
+// ── Full backup restore ─────────────────────────────────────────
+
+/**
+ * Wipe every store and write the supplied backup data in a single transaction.
+ * Call this ONLY for a full restore — it is intentionally destructive.
+ */
+export async function clearAndRestoreBackup(
+  projects: Project[],
+  frames: Frame[],
+  libraries: AssetLibrary[],
+  assets: Asset[],
+): Promise<void> {
+  const d = await db();
+  const tx = d.transaction(
+    ['projects', 'frames', 'assets', 'assetImages', 'assetLibraries'],
+    'readwrite',
+  );
+  await Promise.all([
+    tx.objectStore('projects').clear(),
+    tx.objectStore('frames').clear(),
+    tx.objectStore('assets').clear(),
+    tx.objectStore('assetImages').clear(),
+    tx.objectStore('assetLibraries').clear(),
+  ]);
+  for (const p of projects) tx.objectStore('projects').put(p);
+  for (const f of frames) tx.objectStore('frames').put(f);
+  for (const l of libraries) tx.objectStore('assetLibraries').put(l);
+  for (const a of assets) {
+    const { images, ...meta } = a;
+    tx.objectStore('assets').put(meta);
+    for (const img of images) {
+      tx.objectStore('assetImages').put({
+        id: img.id,
+        assetId: a.id,
+        name: img.name,
+        blob: img.blob,
+      });
+    }
+  }
+  await tx.done;
+}
+
+// ── Asset libraries ─────────────────────────────────────────────
+
 export async function getAssetLibraries(): Promise<AssetLibrary[]> {
   return (await db()).getAll('assetLibraries');
 }

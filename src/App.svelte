@@ -6,7 +6,14 @@
     getFrames, saveFrame, deleteFrame,
     getAssets, saveAsset, deleteAsset, deleteAssetImage,
     getAssetLibraries, saveAssetLibrary, deleteAssetLibrary,
+    getAllFrames, getAllAssetMetas, getAllAssetImages, clearAndRestoreBackup,
   } from './db';
+  import {
+    serializeAssets, triggerDownload, readJsonFile,
+    parseProjectExport, parseLibraryExport, parseFullBackup,
+    remapProjectIds, remapLibraryIds, deserializeFullBackup,
+    type ProjectExport, type LibraryExport, type FullBackup,
+  } from './lib/portability';
   import ProjectScreen from './lib/ProjectScreen.svelte';
   import AssetPanel from './lib/AssetPanel.svelte';
   import FrameInspector from './lib/FrameInspector.svelte';
@@ -730,6 +737,131 @@
     await saveFrame(updated);
     frames = frames.map(f => f.id === updated.id ? updated : f);
   }
+
+  // ── Import / Export ──────────────────────────────────────────
+
+  function safeFilename(name: string): string {
+    return name.replace(/[^a-z0-9_\-]/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'export';
+  }
+
+  async function handleExportProject(e: CustomEvent<{ id: string }>) {
+    const proj = projects.find(p => p.id === e.detail.id);
+    if (!proj) return;
+    const [frameList, assetList] = await Promise.all([
+      getFrames(proj.frameIds),
+      getAssets(proj.assetIds),
+    ]);
+    const { assets: sAssets, images } = await serializeAssets(assetList);
+    const data: ProjectExport = {
+      type: 'comic-helper-project',
+      version: 1,
+      project: proj,
+      frames: frameList,
+      assets: sAssets,
+      images,
+      exportedAt: Date.now(),
+    };
+    triggerDownload(`${safeFilename(proj.name)}.comic-project.json`, data);
+  }
+
+  async function handleImportProject(e: CustomEvent<{ file: File }>) {
+    try {
+      const raw = await readJsonFile(e.detail.file);
+      const data = parseProjectExport(raw);
+      const { project, frames: importedFrames, assets: importedAssets } = remapProjectIds(data);
+      await saveProject(project);
+      for (const f of importedFrames) await saveFrame(f);
+      for (const a of importedAssets) await saveAsset(a);
+      projects = [...projects, project];
+    } catch (err) {
+      alert(`Import failed: ${(err as Error).message}`);
+    }
+  }
+
+  async function handleExportLibrary(e: CustomEvent<{ id: string }>) {
+    const lib = libraries.find(l => l.id === e.detail.id);
+    if (!lib) return;
+    const assetList = await getAssets(lib.assetIds);
+    const { assets: sAssets, images } = await serializeAssets(assetList);
+    const data: LibraryExport = {
+      type: 'comic-helper-library',
+      version: 1,
+      library: lib,
+      assets: sAssets,
+      images,
+      exportedAt: Date.now(),
+    };
+    triggerDownload(`${safeFilename(lib.name)}.comic-library.json`, data);
+  }
+
+  async function handleImportLibrary(e: CustomEvent<{ file: File }>) {
+    try {
+      const raw = await readJsonFile(e.detail.file);
+      const data = parseLibraryExport(raw);
+      const { library, assets: importedAssets } = remapLibraryIds(data);
+      await saveAssetLibrary(library);
+      for (const a of importedAssets) await saveAsset(a);
+      libraries = [...libraries, library];
+    } catch (err) {
+      alert(`Import failed: ${(err as Error).message}`);
+    }
+  }
+
+  async function handleExportBackup() {
+    const [allProjects, allFrames, allLibraries, allMetas, allImages] = await Promise.all([
+      getProjects(),
+      getAllFrames(),
+      getAssetLibraries(),
+      getAllAssetMetas(),
+      getAllAssetImages(),
+    ]);
+    // Reconstruct full Asset objects for serialization.
+    const imagesByAsset = new Map<string, { id: string; name: string; blob: Blob }[]>();
+    for (const img of allImages) {
+      const list = imagesByAsset.get(img.assetId) ?? [];
+      list.push({ id: img.id, name: img.name, blob: img.blob });
+      imagesByAsset.set(img.assetId, list);
+    }
+    const fullAssets: Asset[] = allMetas.map(m => ({
+      ...m,
+      images: imagesByAsset.get(m.id) ?? [],
+    }));
+    const { assets: sAssets, images } = await serializeAssets(fullAssets);
+    const data: FullBackup = {
+      type: 'comic-helper-backup',
+      version: 1,
+      projects: allProjects,
+      frames: allFrames,
+      libraries: allLibraries,
+      assets: sAssets,
+      images,
+      exportedAt: Date.now(),
+    };
+    const date = new Date().toISOString().slice(0, 10);
+    triggerDownload(`comic-helper-backup-${date}.json`, data);
+  }
+
+  async function handleImportBackup(e: CustomEvent<{ file: File }>) {
+    const ok = confirm(
+      'Restore from backup?\n\n' +
+      'This will permanently replace ALL current projects, libraries, and assets. ' +
+      'This cannot be undone.',
+    );
+    if (!ok) return;
+    try {
+      const raw = await readJsonFile(e.detail.file);
+      const data = parseFullBackup(raw);
+      const { projects: bkProjects, frames: bkFrames, libraries: bkLibraries, assets: bkAssets } =
+        deserializeFullBackup(data);
+      await clearAndRestoreBackup(bkProjects, bkFrames, bkLibraries, bkAssets);
+      // Reload all state from the freshly-restored DB.
+      projects = await getProjects();
+      libraries = await getAssetLibraries();
+      closeProject();
+    } catch (err) {
+      alert(`Restore failed: ${(err as Error).message}`);
+    }
+  }
 </script>
 
 <svelte:window on:keydown={onWindowKeydown} on:resize={onWindowResize} />
@@ -740,6 +872,10 @@
     on:open={e => openProject(e.detail.id)}
     on:create={createProject}
     on:delete={handleDeleteProject}
+    on:exportProject={handleExportProject}
+    on:importProject={handleImportProject}
+    on:exportBackup={handleExportBackup}
+    on:importBackup={handleImportBackup}
   />
 {:else}
   <div class="app-shell">
@@ -843,6 +979,8 @@
                 on:detachLibrary={handleDetachLibrary}
                 on:deleteLibrary={handleDeleteLibrary}
                 on:moveAssetToLibrary={handleMoveAssetToLibrary}
+                on:exportLibrary={handleExportLibrary}
+                on:importLibrary={handleImportLibrary}
               />
             </div>
           </section>
@@ -949,6 +1087,8 @@
               on:detachLibrary={handleDetachLibrary}
               on:deleteLibrary={handleDeleteLibrary}
               on:moveAssetToLibrary={handleMoveAssetToLibrary}
+              on:exportLibrary={handleExportLibrary}
+              on:importLibrary={handleImportLibrary}
             />
           {/if}
         </div>

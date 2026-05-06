@@ -9,17 +9,38 @@
     open: { id: string };
     create: { name: string; canvasWidth: number; bgColor: string };
     delete: { id: string };
+    exportProject: { id: string };
+    importProject: { file: File };
+    exportBackup: Record<string, never>;
+    importBackup: { file: File };
   }>();
 
   let newName = '';
   let newWidth = 128;
   let newBgColor = '#ffffff';
 
+  let importProjectInput: HTMLInputElement;
+  let importBackupInput: HTMLInputElement;
+
   function handleCreate() {
     const name = newName.trim();
     if (!name) return;
     dispatch('create', { name, canvasWidth: newWidth, bgColor: newBgColor });
     newName = '';
+  }
+
+  function handleImportProjectFile(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    dispatch('importProject', { file });
+    (e.target as HTMLInputElement).value = '';
+  }
+
+  function handleImportBackupFile(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    dispatch('importBackup', { file });
+    (e.target as HTMLInputElement).value = '';
   }
 
   function fmt(ts: number) {
@@ -65,12 +86,40 @@
               <span class="p-name">{p.name}</span>
               <span class="p-meta">{p.canvasWidth}px wide · {new Date(p.updatedAt).toLocaleDateString()}</span>
             </button>
+            <button class="icon-btn" title="Export project" on:click={() => dispatch('exportProject', { id: p.id })}>⤓</button>
             <button class="icon-btn danger" on:click={() => dispatch('delete', { id: p.id })}>✕</button>
           </li>
         {/each}
       </ul>
     </section>
   {/if}
+
+  <section class="card">
+    <h2>Import / Backup</h2>
+    <div class="io-row">
+      <button class="io-btn" on:click={() => importProjectInput.click()}>⤒ Import Project</button>
+      <input
+        type="file"
+        accept=".json"
+        hidden
+        bind:this={importProjectInput}
+        on:change={handleImportProjectFile}
+      />
+    </div>
+    <div class="io-divider"></div>
+    <div class="io-row">
+      <button class="io-btn" on:click={() => dispatch('exportBackup', {})}>⤓ Export Backup</button>
+      <button class="io-btn danger" on:click={() => importBackupInput.click()}>⤒ Restore Backup</button>
+      <input
+        type="file"
+        accept=".json"
+        hidden
+        bind:this={importBackupInput}
+        on:change={handleImportBackupFile}
+      />
+    </div>
+    <p class="io-note">Restore replaces all current data with the backup file.</p>
+  </section>
 </div>
 
 <style>
@@ -257,5 +306,53 @@
   .icon-btn.danger:hover {
     color: #e05050;
     background: rgba(200, 50, 50, 0.1);
+  }
+
+  .io-row {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .io-btn {
+    flex: 1;
+    min-width: 140px;
+    padding: 0.55rem 0.75rem;
+    background: #2a2a42;
+    border: 1px solid #4a4a6a;
+    border-radius: 6px;
+    color: #c0c0e0;
+    font-size: 0.88rem;
+    font-weight: 500;
+    cursor: pointer;
+    letter-spacing: 0.02em;
+  }
+
+  .io-btn:hover {
+    background: #38386a;
+    color: #e0e0f0;
+  }
+
+  .io-btn.danger {
+    border-color: #7a3a3a;
+    color: #e08080;
+  }
+
+  .io-btn.danger:hover {
+    background: rgba(200, 50, 50, 0.18);
+    color: #f09090;
+  }
+
+  .io-divider {
+    height: 1px;
+    background: #3a3a5a;
+    margin: 0.75rem 0;
+  }
+
+  .io-note {
+    margin: 0.6rem 0 0;
+    font-size: 0.75rem;
+    color: #6060a0;
+    line-height: 1.4;
   }
 </style>

@@ -22,6 +22,8 @@
     detachLibrary: { libraryId: string };
     deleteLibrary: { libraryId: string };
     moveAssetToLibrary: { assetId: string; libraryId: string };
+    exportLibrary: { id: string };
+    importLibrary: { file: File };
   }>();
 
   /** All libraries the asset can be moved into (attached + available). */
@@ -92,6 +94,15 @@
     if (!attachLibrarySelection) return;
     dispatch('attachLibrary', { libraryId: attachLibrarySelection });
     attachLibrarySelection = '';
+  }
+
+  let importLibraryInput: HTMLInputElement;
+
+  function handleImportLibraryFile(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    dispatch('importLibrary', { file });
+    (e.target as HTMLInputElement).value = '';
   }
 
   function confirmDeleteLibrary(lib: AssetLibrary) {
@@ -186,6 +197,7 @@
     <div class="section-header library">
       <span>📚 {attachedLib.name}</span>
       <span class="lib-actions">
+        <button class="lib-btn" title="Export this library to a file" on:click={() => dispatch('exportLibrary', { id: attachedLib.id })}>Export</button>
         <button class="lib-btn" title="Detach library from this project" on:click={() => dispatch('detachLibrary', { libraryId: attachedLib.id })}>Detach</button>
         <button class="lib-btn danger" title="Permanently delete this library" on:click={() => confirmDeleteLibrary(attachedLib)}>Delete</button>
       </span>
@@ -257,6 +269,19 @@
     <button on:click={handleCreateLibrary}>+ Create library</button>
   </div>
 
+  <div class="create-row">
+    <label class="import-lib-btn">
+      ⤒ Import library
+      <input
+        type="file"
+        accept=".json"
+        hidden
+        bind:this={importLibraryInput}
+        on:change={handleImportLibraryFile}
+      />
+    </label>
+  </div>
+
   {#if availableLibraries.length > 0}
     <div class="create-row">
       <select bind:value={attachLibrarySelection}>
@@ -313,5 +338,7 @@
   .thumb-label { font-size: 0.6rem; color: #9090b0; max-width: 52px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .thumb-del { position: absolute; top: -4px; right: -4px; font-size: 0.6rem; background: #7a2020; color: #fff; border-radius: 50%; width: 14px; height: 14px; padding: 0; display: flex; align-items: center; justify-content: center; }
   .upload-btn { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; background: #1a1a30; border: 1px dashed #4a4a6a; border-radius: 4px; cursor: pointer; font-size: 0.7rem; color: #8080a0; text-align: center; }
+  .import-lib-btn { display: inline-flex; align-items: center; padding: 0.3rem 0.7rem; background: #2a2a42; border: 1px solid #4a4a6a; border-radius: 5px; color: #b0b0d0; font-size: 0.8rem; cursor: pointer; }
+  .import-lib-btn:hover { background: #38386a; color: #e0e0f0; }
   .upload-btn:hover { border-color: #9090cc; color: #e0e0f0; }
 </style>

@@ -108,10 +108,17 @@
   let ghostBubble: { frameId: string; bubbleId: string } | null = null;
   let ghostTextareaEl: HTMLTextAreaElement | null = null;
   let ghostCursorPos: number = 0;
+  // Set to true while blur+click are being processed after ghost dismissal so
+  // the automatic drawer-open in handleSelectFrame is suppressed.
+  let ghostJustDismissed = false;
 
   function commitGhostBubble() {
     ghostBubble = null;
     ghostCursorPos = 0;
+    ghostJustDismissed = true;
+    // Clear after the current event batch finishes (blur fires before click,
+    // but we want to suppress the click handler that inevitably follows).
+    setTimeout(() => { ghostJustDismissed = false; }, 0);
   }
 
   function handleGhostInput(e: Event) {
@@ -139,7 +146,7 @@
   // on desktop both panels are always visible).
   function handleSelectFrame(id: string) {
     selectedFrameId = id;
-    if (!desktopMode && activeDrawer === null) activeDrawer = 'inspector';
+    if (!desktopMode && activeDrawer === null && !ghostJustDismissed) activeDrawer = 'inspector';
     // Selecting a different frame exits adjust mode
     if (bgAdjustFrameId && bgAdjustFrameId !== id) bgAdjustFrameId = null;
   }

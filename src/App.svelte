@@ -101,6 +101,37 @@
   let composerRef: CanvasComposer;
   let inspectorRef: FrameInspector | null = null;
 
+  // ── Ghost bubble edit (mobile, drawer closed) ───────────────
+  // When the drawer is closed and the user taps a bubble we focus a hidden
+  // off-screen textarea so the keyboard pops up and they can type directly
+  // into the bubble without the inspector drawer opening.
+  let ghostBubble: { frameId: string; bubbleId: string } | null = null;
+  let ghostTextareaEl: HTMLTextAreaElement | null = null;
+  let ghostCursorPos: number = 0;
+
+  function commitGhostBubble() {
+    ghostBubble = null;
+    ghostCursorPos = 0;
+  }
+
+  function handleGhostInput(e: Event) {
+    if (!ghostBubble) return;
+    const ta = e.target as HTMLTextAreaElement;
+    ghostCursorPos = ta.selectionStart ?? 0;
+    const text = ta.value;
+    const frame = frames.find(f => f.id === ghostBubble!.frameId);
+    if (!frame) return;
+    const updated = { ...frame, bubbles: (frame.bubbles ?? []).map(b =>
+      b.id === ghostBubble!.bubbleId ? { ...b, text } : b
+    )};
+    // Fire-and-forget save (same path as inspector edits)
+    handleFrameChange(new CustomEvent('change', { detail: { frame: updated } }));
+  }
+
+  function updateGhostCursor(e: Event) {
+    ghostCursorPos = (e.target as HTMLTextAreaElement).selectionStart ?? 0;
+  }
+
   $: currentFrame = frames.find(f => f.id === selectedFrameId) ?? null;
   $: currentFrameIndex = currentFrame ? frames.findIndex(f => f.id === currentFrame.id) : -1;
 
@@ -117,11 +148,26 @@
     bgAdjustFrameId = e.detail.id;
   }
 
-  function handleEditBubble(frameId: string, bubbleId: string) {
+  function handleEditBubble(frameId: string, bubbleId: string, tapCursorPos?: number) {
     selectedFrameId = frameId;
-    if (!desktopMode) activeDrawer = 'inspector';
-    // Wait for the inspector to mount/update before focusing.
-    requestAnimationFrame(() => inspectorRef?.focusBubble(bubbleId));
+    if (desktopMode || activeDrawer !== null) {
+      // Drawer is open (or desktop): switch to inspector and focus the textarea there.
+      if (!desktopMode) activeDrawer = 'inspector';
+      requestAnimationFrame(() => inspectorRef?.focusBubble(bubbleId));
+    } else {
+      // Drawer is closed on mobile: open a hidden ghost textarea instead so
+      // the keyboard appears without forcing the drawer open.
+      const _gb_frame = frames.find(f => f.id === frameId);
+      const _gb_textLen = _gb_frame?.bubbles?.find(b => b.id === bubbleId)?.text?.length ?? 0;
+      ghostCursorPos = tapCursorPos !== undefined ? tapCursorPos : _gb_textLen;
+      ghostBubble = { frameId, bubbleId };
+      requestAnimationFrame(() => {
+        if (!ghostTextareaEl) return;
+        ghostTextareaEl.focus();
+        // Position the OS cursor to match the tap position.
+        ghostTextareaEl.setSelectionRange(ghostCursorPos, ghostCursorPos);
+      });
+    }
   }
 
   // ── Boot ───────────────────────────────────────────────────────
@@ -997,10 +1043,11 @@
             {bgAdjustFrameId}
             projectBgColor={currentProject.bgColor}
             projectFontColor={currentProject.fontColor ?? '#000000'}
+            activeBubbleCursor={ghostBubble ? { ...ghostBubble, pos: ghostCursorPos } : null}
             on:change={handleFrameChange}
             on:resize={handleResizeFrame}
             on:select={e => handleSelectFrame(e.detail.id)}
-            on:editbubble={e => handleEditBubble(e.detail.frameId, e.detail.bubbleId)}
+            on:editbubble={e => handleEditBubble(e.detail.frameId, e.detail.bubbleId, e.detail.cursorPos)}
           />
         {:else}
           <div class="no-frame">
@@ -1120,9 +1167,36 @@
   </div>
 {/if}
 
+{#if ghostBubble}
+  {@const ghostFrame = frames.find(f => f.id === ghostBubble?.frameId)}
+  {@const ghostText = ghostFrame?.bubbles?.find(b => b.id === ghostBubble?.bubbleId)?.text ?? ''}
+  <textarea
+    class="ghost-textarea"
+    bind:this={ghostTextareaEl}
+    value={ghostText}
+    on:input={handleGhostInput}
+    on:keyup={updateGhostCursor}
+    on:blur={commitGhostBubble}
+    aria-hidden="true"
+    autocomplete="off"
+    spellcheck="false"
+  ></textarea>
+{/if}
+
 <style>
   :global(*, *::before, *::after) { box-sizing: border-box; }
   :global(html, body) { margin: 0; height: 100%; background: #12121f; color: #e0e0f0; font-family: system-ui, sans-serif; }
+  /* Hidden textarea for bubble editing without opening the drawer.
+     Positioned off-screen so it's reachable by focus (display:none prevents keyboard). */
+  .ghost-textarea {
+    position: fixed;
+    left: -9999px;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
   /* Form elements need explicit colors — browsers don't reliably inherit on all platforms */
   :global(input, select, textarea) {
     color: #e0e0f0;

@@ -24,7 +24,7 @@
     frameOffsetY as _frameOffsetY,
   } from './canvasLayout';
   import {
-    BUBBLE_FONT, loadBubbleFont, measureBubble, buildBubbleCanvas,
+    BUBBLE_FONT, loadBubbleFont, measureBubble, buildBubbleCanvas, hitTestBubbleChar,
     naturalBase, clampBase, sideOfBase, updateBaseForTip,
     BUBBLE_PAD, BUBBLE_RADIUS, TAIL_HANDLE_R, TAIL_LEAD,
   } from './bubbleRenderer';
@@ -38,6 +38,8 @@
   /** Solid fill behind every frame (project-level). */
   export let projectBgColor: string = '#ffffff';
   export let projectFontColor: string = '#000000';
+  /** When the ghost-editor is active, the cursor position to show on that bubble. */
+  export let activeBubbleCursor: { frameId: string; bubbleId: string; pos: number } | null = null;
   /** How many screen pixels per canvas pixel before zoom */
   export let displayScale: number = 3;
   /** Vertical gap (in canvas px) between frames — re-exported for consumers. */
@@ -51,7 +53,7 @@
     change: { frame: Frame };
     resize: { id: string; height: number };
     select: { id: string };
-    editbubble: { frameId: string; bubbleId: string };
+    editbubble: { frameId: string; bubbleId: string; cursorPos?: number };
   }>();
 
   let viewport: HTMLDivElement;     // scrollable wrapper
@@ -216,6 +218,7 @@
   // mid-interaction (which would kill an in-flight drag).
   $: if (layer) {
     void frames; void assets; void bgAdjustFrameId; void projectBgColor; void projectFontColor;
+    void activeBubbleCursor;
     applyStageSize();
     renderAll();
   }
@@ -847,7 +850,10 @@
       frame, bubble.id, bubble.x + tip.x, bubble.y + tip.y,
     );
 
-    let built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor });
+    const cursorPos = (activeBubbleCursor?.frameId === frame.id && activeBubbleCursor?.bubbleId === bubble.id)
+      ? activeBubbleCursor.pos
+      : undefined;
+    let built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor, cursorPos });
     const kImg = new Konva.Image({
       image: built.canvas,
       x: built.offX,
@@ -908,7 +914,16 @@
       if (bubbleDragged) { bubbleDragged = false; return; }
       if (frame.id === bgAdjustFrameId) return;
       if (selectedFrameId !== frame.id) dispatch('select', { id: frame.id });
-      dispatch('editbubble', { frameId: frame.id, bubbleId: bubble.id });
+      // Map the tap/click position to a character offset so the editor can
+      // position its cursor at the tapped location.
+      let tapCursorPos: number | undefined;
+      const pointerPos = stage.getPointerPosition();
+      if (pointerPos) {
+        const transform = bGroup.getAbsoluteTransform().copy().invert();
+        const local = transform.point(pointerPos);
+        tapCursorPos = hitTestBubbleChar(lines, bubble.fontSize, local.x, local.y);
+      }
+      dispatch('editbubble', { frameId: frame.id, bubbleId: bubble.id, cursorPos: tapCursorPos });
     });
 
     // Draggable tip handle — sibling of bGroup so it doesn't drag the bubble.
@@ -941,7 +956,7 @@
       connectedTo = findConnectedBubbleId(
         frame, bubble.id, bGroup.x() + tip.x, bGroup.y() + tip.y,
       );
-      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor });
+      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor, cursorPos });
       kImg.image(built.canvas);
       kImg.position({ x: built.offX, y: built.offY });
       kImg.size({ width: built.canvas.width, height: built.canvas.height });
@@ -994,7 +1009,7 @@
       bgH = remeasured.bgH;
       lines = remeasured.lines;
       if (base) base = clampBase(bgW, bgH, BUBBLE_RADIUS, base.side, base.bx, base.by);
-      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor });
+      built = buildBubbleCanvas({ bubble, bgW, bgH, lines, tip, base, flatTip: !!connectedTo, fontColor: projectFontColor, cursorPos });
       kImg.image(built.canvas);
       kImg.position({ x: built.offX, y: built.offY });
       kImg.size({ width: built.canvas.width, height: built.canvas.height });

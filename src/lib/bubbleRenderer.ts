@@ -70,6 +70,57 @@ export interface BubbleRenderParams {
   flatTip?: boolean;
   /** Color for the bubble text. Defaults to '#000000'. */
   fontColor?: string;
+  /**
+   * Character offset (selectionStart) of the text cursor in the bubble text.
+   * When provided a 1px vertical cursor line is drawn at that position.
+   */
+  cursorPos?: number;
+}
+
+/**
+ * Map a pixel position within a bubble (in bGroup-local canvas coords) to a
+ * flat character offset into the bubble's text string.
+ *
+ * Uses the same font metrics as `buildBubbleCanvas` so the hit position
+ * matches what the user sees rendered on screen.
+ *
+ * @param lines  The `lines` array returned by `measureBubble`.
+ * @param fontSize  The bubble's font size (canvas pixels).
+ * @param lx  X in bGroup-local canvas pixels (bubble.x origin = 0).
+ * @param ly  Y in bGroup-local canvas pixels (bubble.y origin = 0).
+ * @returns Flat character offset (suitable for `selectionStart`).
+ */
+export function hitTestBubbleChar(
+  lines: string[],
+  fontSize: number,
+  lx: number,
+  ly: number,
+): number {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  ctx.font = `${fontSize}px "${BUBBLE_FONT}"`;
+
+  const textX = Math.max(0, lx - BUBBLE_PAD);
+  const textY = ly - BUBBLE_PAD;
+  const lineIdx = Math.max(0, Math.min(lines.length - 1, Math.floor(textY / fontSize)));
+
+  const line = lines[lineIdx] ?? '';
+  // Find the character boundary (0 .. line.length) whose pixel offset is
+  // closest to textX. This correctly handles variable-width pixel fonts.
+  let bestCol = 0;
+  let bestDist = Infinity;
+  for (let c = 0; c <= line.length; c++) {
+    const dist = Math.abs(ctx.measureText(line.slice(0, c)).width - textX);
+    if (dist < bestDist) { bestDist = dist; bestCol = c; }
+  }
+
+  // Convert (lineIdx, bestCol) → flat offset.
+  // Each line separator (newline or word-wrap space) costs exactly 1 char.
+  let offset = bestCol;
+  for (let i = 0; i < lineIdx; i++) {
+    offset += lines[i].length + 1;
+  }
+  return offset;
 }
 
 /**
@@ -222,6 +273,32 @@ export function buildBubbleCanvas(params: BubbleRenderParams): {
     }
   }
   ctx.putImageData(textImg, 0, 0);
+
+  // Draw the text cursor if a position is provided. This is drawn after the
+  // text threshold step so it sits cleanly on top of the glyphs.
+  // Strategy: walk `lines` treating each separator (newline or wrapped space)
+  // as consuming exactly 1 character — this works for both auto-sized and
+  // word-wrapped bubbles since both use single-char separators.
+  const { cursorPos } = params;
+  if (cursorPos !== undefined) {
+    ctx.font = `${bubble.fontSize}px "${BUBBLE_FONT}"`;
+    ctx.textBaseline = 'top';
+    let remaining = Math.max(0, cursorPos);
+    let lineIdx = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (remaining <= lines[i].length) { lineIdx = i; break; }
+      const consumed = lines[i].length + (i < lines.length - 1 ? 1 : 0);
+      remaining -= consumed;
+      if (remaining < 0) { remaining = lines[i].length; lineIdx = i; break; }
+      lineIdx = Math.min(i + 1, lines.length - 1);
+    }
+    const col = Math.min(remaining, lines[lineIdx]?.length ?? 0);
+    const colText = (lines[lineIdx] ?? '').slice(0, col);
+    const cx = BUBBLE_PAD + Math.round(ctx.measureText(colText).width);
+    const cy = BUBBLE_PAD + lineIdx * lineHeight;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(cx, cy, 1, lineHeight);
+  }
 
   return { canvas: c, offX: minX, offY: minY };
 }

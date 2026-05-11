@@ -56,6 +56,11 @@ src/
     FrameInspector.svelte   # Drawer panel: edit selected frame's meta/bg/layers/bubbles
     AssetPanel.svelte       # Drawer panel: manage character + background assets
     ImagePicker.svelte      # Modal grid for choosing an image variant from an asset
+    bubbleGeometry.ts       # Pure geometry helpers for speech bubbles (sides, base, tail)
+    bubbleRenderer.ts       # Offscreen canvas rasterisation of bubbles + font loader
+    canvasLayout.ts         # Stacked-frame layout math
+    portability.ts          # Project / library / full-backup JSON serialisation
+    googleDrive.ts          # Google Drive backup integration (GIS OAuth + Drive REST)
     Counter.svelte          # (unused leftover from the Vite template — safe to remove)
 public/                  # Static assets copied as-is (favicon, icons.svg)
 ```
@@ -170,6 +175,22 @@ This is the largest and most complex file (~1000 lines). Key facts:
 - **Export**: stacked PNG of all frames at native (1x) resolution; optional
   4x / 8x nearest-neighbor upscale chosen from a select next to the Export
   button. UI overlay elements (handles, selection outline) are excluded.
+- **Import / Backup (local file)**: per-project export/import, per-library
+  export/import, and full backup/restore as JSON. Logic lives in
+  `src/lib/portability.ts`; UI lives in the Import/Backup card on
+  `ProjectScreen.svelte`.
+- **Google Drive backup**: optional cloud backup/restore. Uses Google
+  Identity Services (loaded lazily from `accounts.google.com/gsi/client`)
+  for OAuth and the Drive v3 REST API. Scope is `drive.file` so the app
+  can only see files it created itself. All backups are written to a
+  folder named `comic helper` at the root of the user's Drive (created on
+  first save). The OAuth Client ID is read from
+  `import.meta.env.VITE_GOOGLE_CLIENT_ID` first, falling back to the
+  localStorage key `comic-helper:google-client-id` (settable from the UI).
+  All Drive logic is encapsulated in `src/lib/googleDrive.ts`; `App.svelte`
+  owns the connection state and dispatches handlers; `ProjectScreen.svelte`
+  renders the UI section. The deployed origin must be added to the OAuth
+  client's "Authorized JavaScript origins" in Google Cloud Console.
 - **PWA**: installable, offline-capable via `vite-plugin-pwa` autoUpdate.
 
 ## Conventions

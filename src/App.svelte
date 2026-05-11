@@ -14,6 +14,13 @@
     remapProjectIds, remapLibraryIds, deserializeFullBackup,
     type ProjectExport, type LibraryExport, type FullBackup,
   } from './lib/portability';
+  import {
+    signIn as driveSignIn, signOut as driveSignOut,
+    isSignedIn as driveIsSignedIn, getSignedInEmail,
+    listBackups as driveListBackups, uploadBackup as driveUploadBackup,
+    downloadBackup as driveDownloadBackup, deleteBackup as driveDeleteBackup,
+    type DriveBackupFile,
+  } from './lib/googleDrive';
   import ProjectScreen from './lib/ProjectScreen.svelte';
   import AssetPanel from './lib/AssetPanel.svelte';
   import FrameInspector from './lib/FrameInspector.svelte';
@@ -861,6 +868,14 @@
   }
 
   async function handleExportBackup() {
+    const data = await buildFullBackup();
+    const date = new Date().toISOString().slice(0, 10);
+    triggerDownload(`comic-helper-backup-${date}.json`, data);
+  }
+
+  /** Build a FullBackup object from the current DB state. Used by both
+   *  local-file export and Google Drive upload. */
+  async function buildFullBackup(): Promise<FullBackup> {
     const [allProjects, allFrames, allLibraries, allMetas, allImages] = await Promise.all([
       getProjects(),
       getAllFrames(),
@@ -868,7 +883,6 @@
       getAllAssetMetas(),
       getAllAssetImages(),
     ]);
-    // Reconstruct full Asset objects for serialization.
     const imagesByAsset = new Map<string, { id: string; name: string; blob: Blob }[]>();
     for (const img of allImages) {
       const list = imagesByAsset.get(img.assetId) ?? [];
@@ -880,7 +894,7 @@
       images: imagesByAsset.get(m.id) ?? [],
     }));
     const { assets: sAssets, images } = await serializeAssets(fullAssets);
-    const data: FullBackup = {
+    return {
       type: 'comic-helper-backup',
       version: 1,
       projects: allProjects,
@@ -890,8 +904,6 @@
       images,
       exportedAt: Date.now(),
     };
-    const date = new Date().toISOString().slice(0, 10);
-    triggerDownload(`comic-helper-backup-${date}.json`, data);
   }
 
   async function handleImportBackup(e: CustomEvent<{ file: File }>) {
@@ -903,16 +915,111 @@
     if (!ok) return;
     try {
       const raw = await readJsonFile(e.detail.file);
-      const data = parseFullBackup(raw);
-      const { projects: bkProjects, frames: bkFrames, libraries: bkLibraries, assets: bkAssets } =
-        deserializeFullBackup(data);
-      await clearAndRestoreBackup(bkProjects, bkFrames, bkLibraries, bkAssets);
-      // Reload all state from the freshly-restored DB.
-      projects = await getProjects();
-      libraries = await getAssetLibraries();
-      closeProject();
+      await applyFullBackup(raw);
     } catch (err) {
       alert(`Restore failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** Apply a parsed FullBackup-shaped object to the DB and refresh UI state.
+   *  Caller is responsible for any user confirmation. */
+  async function applyFullBackup(raw: unknown): Promise<void> {
+    const data = parseFullBackup(raw);
+    const { projects: bkProjects, frames: bkFrames, libraries: bkLibraries, assets: bkAssets } =
+      deserializeFullBackup(data);
+    await clearAndRestoreBackup(bkProjects, bkFrames, bkLibraries, bkAssets);
+    projects = await getProjects();
+    libraries = await getAssetLibraries();
+    closeProject();
+  }
+
+  // ── Google Drive ───────────────────────────────────────────────
+
+  let driveConnected: boolean = false;
+  let driveEmail: string | null = null;
+  let driveBackups: DriveBackupFile[] = [];
+  let driveBusy: boolean = false;
+
+  async function handleDriveConnect() {
+    if (driveBusy) return;
+    driveBusy = true;
+    try {
+      const session = await driveSignIn();
+      driveConnected = driveIsSignedIn();
+      driveEmail = session.email ?? getSignedInEmail();
+      driveBackups = await driveListBackups();
+    } catch (err) {
+      alert(`Google Drive sign-in failed: ${(err as Error).message}`);
+    } finally {
+      driveBusy = false;
+    }
+  }
+
+  function handleDriveDisconnect() {
+    driveSignOut();
+    driveConnected = false;
+    driveEmail = null;
+    driveBackups = [];
+  }
+
+  async function handleDriveRefresh() {
+    if (!driveConnected || driveBusy) return;
+    driveBusy = true;
+    try {
+      driveBackups = await driveListBackups();
+    } catch (err) {
+      alert(`Failed to refresh Drive backups: ${(err as Error).message}`);
+    } finally {
+      driveBusy = false;
+    }
+  }
+
+  async function handleDriveSaveBackup() {
+    if (!driveConnected || driveBusy) return;
+    driveBusy = true;
+    try {
+      const data = await buildFullBackup();
+      const date = new Date().toISOString().slice(0, 16).replace(':', '-');
+      const filename = `comic-helper-backup-${date}.json`;
+      await driveUploadBackup(filename, data);
+      driveBackups = await driveListBackups();
+    } catch (err) {
+      alert(`Failed to save backup to Drive: ${(err as Error).message}`);
+    } finally {
+      driveBusy = false;
+    }
+  }
+
+  async function handleDriveRestore(e: CustomEvent<{ id: string; name: string }>) {
+    if (!driveConnected || driveBusy) return;
+    const ok = confirm(
+      `Restore from Drive backup "${e.detail.name}"?\n\n` +
+      'This will permanently replace ALL current projects, libraries, and assets. ' +
+      'This cannot be undone.',
+    );
+    if (!ok) return;
+    driveBusy = true;
+    try {
+      const raw = await driveDownloadBackup(e.detail.id);
+      await applyFullBackup(raw);
+    } catch (err) {
+      alert(`Restore failed: ${(err as Error).message}`);
+    } finally {
+      driveBusy = false;
+    }
+  }
+
+  async function handleDriveDelete(e: CustomEvent<{ id: string; name: string }>) {
+    if (!driveConnected || driveBusy) return;
+    if (!confirm(`Delete "${e.detail.name}" from Drive? This cannot be undone.`)) return;
+    driveBusy = true;
+    try {
+      await driveDeleteBackup(e.detail.id);
+      driveBackups = await driveListBackups();
+    } catch (err) {
+      alert(`Delete failed: ${(err as Error).message}`);
+    } finally {
+      driveBusy = false;
     }
   }
 </script>
@@ -929,6 +1036,16 @@
     on:importProject={handleImportProject}
     on:exportBackup={handleExportBackup}
     on:importBackup={handleImportBackup}
+    driveConnected={driveConnected}
+    driveEmail={driveEmail}
+    driveBackups={driveBackups}
+    driveBusy={driveBusy}
+    on:driveConnect={handleDriveConnect}
+    on:driveDisconnect={handleDriveDisconnect}
+    on:driveRefresh={handleDriveRefresh}
+    on:driveSaveBackup={handleDriveSaveBackup}
+    on:driveRestore={handleDriveRestore}
+    on:driveDelete={handleDriveDelete}
   />
 {:else}
   <div class="app-shell">

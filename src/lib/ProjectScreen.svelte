@@ -2,8 +2,15 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import type { Project } from '../types';
+  import type { DriveBackupFile } from './googleDrive';
 
   export let projects: Project[] = [];
+
+  // ── Google Drive props (state owned by App.svelte) ──
+  export let driveConnected: boolean = false;
+  export let driveEmail: string | null = null;
+  export let driveBackups: DriveBackupFile[] = [];
+  export let driveBusy: boolean = false;
 
   const dispatch = createEventDispatcher<{
     open: { id: string };
@@ -13,6 +20,12 @@
     importProject: { file: File };
     exportBackup: Record<string, never>;
     importBackup: { file: File };
+    driveConnect: Record<string, never>;
+    driveDisconnect: Record<string, never>;
+    driveRefresh: Record<string, never>;
+    driveSaveBackup: Record<string, never>;
+    driveRestore: { id: string; name: string };
+    driveDelete: { id: string; name: string };
   }>();
 
   let newName = '';
@@ -45,6 +58,17 @@
 
   function fmt(ts: number) {
     return new Date(ts).toLocaleDateString();
+  }
+
+  function fmtDate(iso: string): string {
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  }
+
+  function fmtSize(bytes: number): string {
+    if (!bytes) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 </script>
 
@@ -119,6 +143,49 @@
       />
     </div>
     <p class="io-note">Restore replaces all current data with the backup file.</p>
+  </section>
+
+  <section class="card">
+    <h2>Google Drive</h2>
+    {#if !driveConnected}
+      <button class="io-btn io-btn-google" on:click={() => dispatch('driveConnect', {})} disabled={driveBusy}>
+        <svg class="google-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+        </svg>
+        {driveBusy ? 'Connecting…' : 'Connect Google Account'}
+      </button>
+      <p class="io-note">Backups are saved to a folder named “omic helper” in your Drive. Comic Helper can only see files it created itself.</p>
+    {:else}
+      <div class="drive-status">
+        <span class="drive-email">{driveEmail ?? 'Connected'}</span>
+        <button class="icon-btn" title="Refresh" on:click={() => dispatch('driveRefresh', {})} disabled={driveBusy}>↻</button>
+        <button class="icon-btn danger" title="Disconnect" on:click={() => dispatch('driveDisconnect', {})}>✕</button>
+      </div>
+      <div class="io-row" style="margin-top: 0.6rem;">
+        <button class="io-btn" on:click={() => dispatch('driveSaveBackup', {})} disabled={driveBusy}>
+          {driveBusy ? 'Working…' : '❐ Save Backup to Drive'}
+        </button>
+      </div>
+      {#if driveBackups.length > 0}
+        <ul class="drive-list">
+          {#each driveBackups as f (f.id)}
+            <li class="drive-item">
+              <div class="drive-info">
+                <span class="drive-name">{f.name}</span>
+                <span class="drive-meta">{fmtDate(f.modifiedTime)}{f.size ? ' · ' + fmtSize(f.size) : ''}</span>
+              </div>
+              <button class="icon-btn" title="Restore" on:click={() => dispatch('driveRestore', { id: f.id, name: f.name })} disabled={driveBusy}>⤒</button>
+              <button class="icon-btn danger" title="Delete" on:click={() => dispatch('driveDelete', { id: f.id, name: f.name })} disabled={driveBusy}>✕</button>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="io-note">No backups in Drive yet.</p>
+      {/if}
+    {/if}
   </section>
 </div>
 
@@ -347,6 +414,100 @@
     height: 1px;
     background: #3a3a5a;
     margin: 0.75rem 0;
+  }
+
+  .io-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .drive-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: #12121f;
+    border: 1px solid #3a3a5a;
+    border-radius: 7px;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .drive-email {
+    flex: 1;
+    font-size: 0.85rem;
+    color: #c0c0e0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .drive-list {
+    list-style: none;
+    margin: 0.75rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .drive-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: #12121f;
+    border: 1px solid #3a3a5a;
+    border-radius: 7px;
+    overflow: hidden;
+  }
+
+  .drive-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.5rem 0.75rem;
+    min-width: 0;
+  }
+
+  .drive-name {
+    font-size: 0.85rem;
+    color: #e0e0f0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .drive-meta {
+    font-size: 0.72rem;
+    color: #7070a0;
+  }
+
+  .io-btn-google {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    background: #ffffff;
+    border: 1px solid #dadce0;
+    color: #3c4043;
+    font-weight: 600;
+    width: 100%;
+  }
+
+  .io-btn-google:hover:not(:disabled) {
+    background: #f8f9fa;
+    border-color: #c6c9cc;
+    color: #3c4043;
+  }
+
+  .io-btn-google:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .google-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
   }
 
   .io-note {

@@ -60,6 +60,8 @@ let tokenExpiry: number = 0; // epoch ms
 let cachedFolderId: string | null = null;
 let signedInEmail: string | null = null;
 
+const EMAIL_LS_KEY = 'comic-helper:drive-email';
+
 // ── Client ID resolution ─────────────────────────────────────────
 
 export function getConfiguredClientId(): string | null {
@@ -168,6 +170,7 @@ export async function signIn(): Promise<DriveSession> {
     if (r.ok) {
       const j = await r.json() as { email?: string };
       signedInEmail = j.email ?? null;
+      try { if (signedInEmail) localStorage.setItem(EMAIL_LS_KEY, signedInEmail); } catch { /* ignore */ }
     }
   } catch { /* ignore — email is optional */ }
   return { email: signedInEmail };
@@ -181,6 +184,35 @@ export function signOut(): void {
   tokenExpiry = 0;
   cachedFolderId = null;
   signedInEmail = null;
+  try { localStorage.removeItem(EMAIL_LS_KEY); } catch { /* ignore */ }
+}
+
+/**
+ * Attempt a silent reconnect on app startup. Returns a session if GIS can
+ * re-acquire a token without a popup (user still has an active Google session),
+ * or null if interaction is required.
+ */
+export async function autoConnect(): Promise<DriveSession | null> {
+  try {
+    const storedEmail = localStorage.getItem(EMAIL_LS_KEY);
+    if (!storedEmail) return null; // never connected before
+    const clientId = getConfiguredClientId();
+    if (!clientId) return null;
+    await loadGis();
+    if (!tokenClient) {
+      tokenClient = window.google!.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: DRIVE_SCOPE,
+        callback: () => {},
+      });
+    }
+    await acquireToken(false); // silent — no popup
+    if (!accessToken) return null;
+    signedInEmail = storedEmail;
+    return { email: signedInEmail };
+  } catch {
+    return null; // silent failure — user will see the Connect button
+  }
 }
 
 export function isSignedIn(): boolean {

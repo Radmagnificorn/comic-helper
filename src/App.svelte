@@ -17,6 +17,7 @@
   import {
     signIn as driveSignIn, signOut as driveSignOut,
     isSignedIn as driveIsSignedIn, getSignedInEmail,
+    autoConnect as driveAutoConnect,
     listBackups as driveListBackups, uploadBackup as driveUploadBackup,
     downloadBackup as driveDownloadBackup, deleteBackup as driveDeleteBackup,
     type DriveBackupFile,
@@ -187,6 +188,16 @@
   // ── Boot ───────────────────────────────────────────────────────
   onMount(async () => {
     [projects, libraries] = await Promise.all([getProjects(), getAssetLibraries()]);
+
+    // Silently reconnect Drive if the user connected before
+    try {
+      const session = await driveAutoConnect();
+      if (session) {
+        driveConnected = true;
+        driveEmail = session.email;
+        driveBackups = await driveListBackups();
+      }
+    } catch { /* ignore — user will see the Connect button */ }
   });
 
   // ── Project ops ────────────────────────────────────────────────
